@@ -33,9 +33,9 @@ DATE:         2026-08-25
 DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
 DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Intel sources confirmed, imports-mcp transport settled (O2).
+TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Intel sources + MCP transport settled, normaliser starting (O2).
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); synced with O2's T-003 spike findings
+LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); T-003 + T-004 done (O2)
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -59,8 +59,8 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
-| 4 | **T-010** | Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256 | O2 | | First real Slice-1 build task, no dependencies, unblocks `parse_message` (T-012) |
+| 3 | **T-010** | Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256 | O2 | | First real Slice-1 build task, no dependencies, unblocks `parse_message` (T-012) |
+| 4 | **T-011** | 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers** | O2 | | Local fixtures have no `Authentication-Results` header by default — must be hand-written, and T-010 needs something to parse against |
 
 ⏱ = has a timebox. See §3.
 
@@ -98,6 +98,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-014 · [O1] · `harness/detonate.js` — text-mode detonation: follows redirects (manual, capped at 10 hops, non-http(s) schemes refused), parses final HTML with `node-html-parser` (never regex, per §12), flags forms that ask for a password and post cross-domain. Self-tested against a local-only fixture server (`harness/detonate.test.js`, `node --test`, 3/3 pass) — never touched a real domain (§13). `harness/package.json` added (one dependency: `node-html-parser`); root `.gitignore` added (`node_modules/` wasn't excluded before) — result: returns `{url, redirect_chain, final_url, forms, summary}`, matches §10's `detonate(url)` shape minus the screenshot field
 2026-08-25 · T-014 (Qodo pass) · [O1] · Fixed 5 real bugs Qodo's PR #3 review found: fetch/DNS/timeout/malformed-redirect failures now return `{url, redirect_chain, error}` instead of throwing; one malformed form `action` no longer aborts analysis of the rest of the page (represented with `action_invalid: true` instead); HTML content-type check is case-insensitive; response body is read with a hard byte cap (`readBodyWithLimit`, streamed, never fully buffered) before parsing; non-HTML success responses now return the full documented shape including `summary`. 10/10 tests pass (7 new regression tests added). Declined one finding — see §8
 2026-08-25 · T-003 · [O2] SPIKE 3 — all three intel sources confirmed live: RDAP via `rdap.org/domain/{domain}` (follow redirects) returns registration date + abuse contact; crt.sh reachable but 502ing on every attempt right now (matches known trap, mitigation unchanged); URLhaus `/v1/host/` and `/v1/urls/recent/` both confirmed working with the `Auth-Key` header already present in `.env` — added `.env.example` since none existed
+2026-08-25 · T-004 · [O2] Read `bring-your-own-mcp` cookbook example (README, agent.json, mcp-server.mjs, package.json) end to end — settles trap #1 (transport mismatch) before any MCP code gets written
 
 ---
 
@@ -129,6 +130,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · [O1] · Cockpit (O3) builds against the HTTP/SSE API directly, never the chat UI — POST /sessions, POST /sessions/{id}/turns (stream:true → SSE), watch for `tool.approval_required` events, resume with a turn whose input is `{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny"}}`. Reconnects use GET /turns/{id}/subscribe?after_sequence_number=. Confirmed against the live server's own OpenAPI schema, not just docs (T-002)
 2026-08-25 · [O2] · RDAP lookups go through `rdap.org/domain/{domain}` with redirects followed, not hardcoded per-registry servers — one entry point, confirmed fast (~0.5s) and correct
 2026-08-25 · [O2] · URLhaus now requires the `Auth-Key` header on every endpoint, including read-only host/url lookups, not just submissions — code the intel client assuming auth is mandatory everywhere
+2026-08-25 · [O2] · `imports-mcp` will be Streamable HTTP (Express + `@modelcontextprotocol/sdk/server/streamableHttp.js`), stateless per-request, registered in TrueForge via Settings → Connectors then referenced by name in `agent.json` — settled from the `bring-your-own-mcp` cookbook, not stdio
 ```
 
 ---
@@ -289,7 +291,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 1 — ugly vertical slice (Day 1)
 *One hardcoded fixture → parse → one subagent → hardcoded verdict → one approval gate → cockpit shows it. It will be hideous. It must run before anyone sleeps.*
-- **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
 
