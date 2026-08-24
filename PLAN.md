@@ -59,8 +59,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-010** | Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256 | O2 | | First real Slice-1 build task, no dependencies, unblocks `parse_message` (T-012) |
-| 4 | **T-011** | 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers** | O2 | | Local fixtures have no `Authentication-Results` header by default — must be hand-written, and T-010 needs something to parse against |
+| 3 | **T-011** | 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers** | O2 | | T-010 needs something real to parse against; queued to start right after |
 
 ⏱ = has a timebox. See §3.
 
@@ -73,7 +72,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-010 | O2 | 2026-08-25 04:11 | 2h | Ship headers + URL extraction only; stub attachment SHA256 as TODO, log the gap in §7, move on to T-011 |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -131,6 +130,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · [O2] · RDAP lookups go through `rdap.org/domain/{domain}` with redirects followed, not hardcoded per-registry servers — one entry point, confirmed fast (~0.5s) and correct
 2026-08-25 · [O2] · URLhaus now requires the `Auth-Key` header on every endpoint, including read-only host/url lookups, not just submissions — code the intel client assuming auth is mandatory everywhere
 2026-08-25 · [O2] · `imports-mcp` will be Streamable HTTP (Express + `@modelcontextprotocol/sdk/server/streamableHttp.js`), stateless per-request, registered in TrueForge via Settings → Connectors then referenced by name in `agent.json` — settled from the `bring-your-own-mcp` cookbook, not stdio
+2026-08-25 · [O2] · `/tools` is Python — stdlib `email` for RFC822 parsing, `lxml` for HTML (per the trap in §12), MCP server on the official Python MCP SDK's streamable-HTTP transport to match T-004's findings
 ```
 
 ---
