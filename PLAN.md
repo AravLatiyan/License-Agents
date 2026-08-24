@@ -72,7 +72,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-010 | O2 | 2026-08-25 04:11 | 2h | Ship headers + URL extraction only; stub attachment SHA256 as TODO, log the gap in §7, move on to T-011 |
+| T-011 | O2 | 2026-08-25 04:16 | 1h | Ship whichever of the 3 fixtures are done; stub the rest as TODO, log the gap in §7 |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -98,6 +98,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-014 (Qodo pass) · [O1] · Fixed 5 real bugs Qodo's PR #3 review found: fetch/DNS/timeout/malformed-redirect failures now return `{url, redirect_chain, error}` instead of throwing; one malformed form `action` no longer aborts analysis of the rest of the page (represented with `action_invalid: true` instead); HTML content-type check is case-insensitive; response body is read with a hard byte cap (`readBodyWithLimit`, streamed, never fully buffered) before parsing; non-HTML success responses now return the full documented shape including `summary`. 10/10 tests pass (7 new regression tests added). Declined one finding — see §8
 2026-08-25 · T-003 · [O2] SPIKE 3 — all three intel sources confirmed live: RDAP via `rdap.org/domain/{domain}` (follow redirects) returns registration date + abuse contact; crt.sh reachable but 502ing on every attempt right now (matches known trap, mitigation unchanged); URLhaus `/v1/host/` and `/v1/urls/recent/` both confirmed working with the `Auth-Key` header already present in `.env` — added `.env.example` since none existed
 2026-08-25 · T-004 · [O2] Read `bring-your-own-mcp` cookbook example (README, agent.json, mcp-server.mjs, package.json) end to end — settles trap #1 (transport mismatch) before any MCP code gets written
+2026-08-25 · T-010 · [O2] Normaliser (`tools/imports_mcp/normaliser.py`) — RFC822 parse via stdlib `email`, URLs via `lxml.html` (href + anchor text, plain-text bare-URL fallback), attachment SHA256, raw Authentication-Results/Received chains passed through unverified. Smoke-tested against a synthetic phish + a synthetic legit mail, both correct
 
 ---
 
@@ -147,6 +148,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | 2026-08-25 | O1 | `harness/README.md` fell out of date **within the same PR** — T-017 fixed the Windows segfault and runtime-verified `agent.json`, but the README's "known issue" section still read as unresolved. Qodo's first-pass review caught it (2 Medium findings) rather than us | When a task's result changes something already documented elsewhere in the same branch, update that doc in the *same commit* as the fix, don't leave stale wording for review to catch |
 | 2026-08-25 | O2 | crt.sh returned 502 on 7/7 live attempts against two different domains, in-line with the known trap | Ship the 5s timeout + SQLite cache from day one (T-045) — don't wait for it to fail in front of a judge |
 | 2026-08-25 | O2 | No `.env.example` existed even though a real `.env` with `URLHAUS_AUTH_KEY` was already in the repo (gitignored, untracked — never committed) | Added `.env.example` with the key name and no value; do this for every new secret going forward |
+| 2026-08-25 | O2 | `python` on PATH in Git Bash resolves to an MSYS2 build (`C:\msys64\ucrt64\bin\python.exe`) with no PyPI wheels for compiled packages — `pip install lxml` tried to compile from source and failed on a missing `libxml/xpath.h` | Use the python.org install instead (`py -3` or the full path under `AppData\Local\Programs\Python\`) when creating `tools/.venv` — every O2 teammate on Windows needs to know this |
 
 ---
 
