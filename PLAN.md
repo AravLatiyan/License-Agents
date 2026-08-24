@@ -33,9 +33,9 @@ DATE:         2026-08-25
 DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
 DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Intel sources + MCP transport settled, normaliser starting (O2).
+TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Normaliser + fixtures done, imports-mcp skeleton next (O2).
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); T-003 + T-004 done (O2)
+LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); T-003, T-004, T-010, T-011 done (O2)
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -59,7 +59,8 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-011** | 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers** | O2 | | T-010 needs something real to parse against; queued to start right after |
+| 3 | **T-012** | `imports-mcp` skeleton with `parse_message` working end to end | O2 | | Normaliser (T-010) and fixtures (T-011) exist — this is where they become the first real MCP tool |
+| 4 | **T-020** | `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age, as a second `imports-mcp` tool | O2 | | RDAP/crt.sh already confirmed live in T-003; queued behind T-012 |
 
 ⏱ = has a timebox. See §3.
 
@@ -72,7 +73,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-011 | O2 | 2026-08-25 04:16 | 1h | Ship whichever of the 3 fixtures are done; stub the rest as TODO, log the gap in §7 |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -99,6 +100,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-003 · [O2] SPIKE 3 — all three intel sources confirmed live: RDAP via `rdap.org/domain/{domain}` (follow redirects) returns registration date + abuse contact; crt.sh reachable but 502ing on every attempt right now (matches known trap, mitigation unchanged); URLhaus `/v1/host/` and `/v1/urls/recent/` both confirmed working with the `Auth-Key` header already present in `.env` — added `.env.example` since none existed
 2026-08-25 · T-004 · [O2] Read `bring-your-own-mcp` cookbook example (README, agent.json, mcp-server.mjs, package.json) end to end — settles trap #1 (transport mismatch) before any MCP code gets written
 2026-08-25 · T-010 · [O2] Normaliser (`tools/imports_mcp/normaliser.py`) — RFC822 parse via stdlib `email`, URLs via `lxml.html` (href + anchor text, plain-text bare-URL fallback), attachment SHA256, raw Authentication-Results/Received chains passed through unverified. Smoke-tested against a synthetic phish + a synthetic legit mail, both correct
+2026-08-25 · T-011 · [O2] 3 fixtures in `tools/fixtures/` — credential phish (SPF/DKIM/DMARC fail, raw-IP href vs polished anchor text), invoice fraud/BEC (homograph lookalike domain `universaI-imports.co` where auth actually PASSES, reply-to redirected to a third domain, PDF attachment), and one legitimate mail that must not trip anything. All hand-written `Authentication-Results`/`Received` headers per trap #11. Ran the T-010 normaliser against all three — every signal (auth fail, href/anchor mismatch, reply-to mismatch, attachment hash) came through correctly
 
 ---
 
@@ -293,11 +295,9 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 1 — ugly vertical slice (Day 1)
 *One hardcoded fixture → parse → one subagent → hardcoded verdict → one approval gate → cockpit shows it. It will be hideous. It must run before anyone sleeps.*
-- **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
 
 ## Slice 2 — intelligence (Day 2)
-- **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
 - **T-021** [O2] `url_reputation` — URLhaus
 - **T-022** [O2] `correspondence_history` — IMAP search for prior contact
 - **T-023** [O1] Three subagents — INFRASTRUCTURE / IDENTITY / HISTORY, running in parallel
