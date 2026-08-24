@@ -31,11 +31,11 @@ Sections §1–§8 are living. Sections §9–§18 are the reference and change 
 PHASE:        DAY 1 — SLICE 1 (ugly vertical slice)
 DATE:         2026-08-25
 DAYS LEFT:    5
-ACTIVE:       Owner 1 (Harness)
-DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
+ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
+DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
+TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Intel sources confirmed, imports-mcp transport settled (O2).
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-review fixes and 2 finding dismissals) done, PR #3 Qodo-clean (0 bugs, 0 rule violations), awaiting merge decision
+LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); synced with O2's T-003 spike findings
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -59,8 +59,8 @@ LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-revi
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
-| 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
+| 3 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
+| 4 | **T-010** | Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256 | O2 | | First real Slice-1 build task, no dependencies, unblocks `parse_message` (T-012) |
 
 ⏱ = has a timebox. See §3.
 
@@ -97,6 +97,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
 2026-08-25 · T-014 · [O1] · `harness/detonate.js` — text-mode detonation: follows redirects (manual, capped at 10 hops, non-http(s) schemes refused), parses final HTML with `node-html-parser` (never regex, per §12), flags forms that ask for a password and post cross-domain. Self-tested against a local-only fixture server (`harness/detonate.test.js`, `node --test`, 3/3 pass) — never touched a real domain (§13). `harness/package.json` added (one dependency: `node-html-parser`); root `.gitignore` added (`node_modules/` wasn't excluded before) — result: returns `{url, redirect_chain, final_url, forms, summary}`, matches §10's `detonate(url)` shape minus the screenshot field
 2026-08-25 · T-014 (Qodo pass) · [O1] · Fixed 5 real bugs Qodo's PR #3 review found: fetch/DNS/timeout/malformed-redirect failures now return `{url, redirect_chain, error}` instead of throwing; one malformed form `action` no longer aborts analysis of the rest of the page (represented with `action_invalid: true` instead); HTML content-type check is case-insensitive; response body is read with a hard byte cap (`readBodyWithLimit`, streamed, never fully buffered) before parsing; non-HTML success responses now return the full documented shape including `summary`. 10/10 tests pass (7 new regression tests added). Declined one finding — see §8
+2026-08-25 · T-003 · [O2] SPIKE 3 — all three intel sources confirmed live: RDAP via `rdap.org/domain/{domain}` (follow redirects) returns registration date + abuse contact; crt.sh reachable but 502ing on every attempt right now (matches known trap, mitigation unchanged); URLhaus `/v1/host/` and `/v1/urls/recent/` both confirmed working with the `Auth-Key` header already present in `.env` — added `.env.example` since none existed
 
 ---
 
@@ -126,6 +127,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-24 · [all] · Qodo installed and left alone — it is half of judging criterion 04 which is scored on EVERY submission regardless of track. 10 min setup, zero ongoing. We are NOT chasing the Best Code Quality track itself; four iPads on Best UI beats one Mac Mini split four ways
 2026-08-25 · [O1] · Detonation defaults to TEXT-MODE FALLBACK (HTTP redirect chain, HTML parse, form-target extraction) — Spike 1 (chromium in Daytona) never produced committed work inside its 3h box, box expired ~9h unattended. Screenshot detonation is now a stretch goal only, revisited if Slice 1–3 land early
 2026-08-25 · [O1] · Cockpit (O3) builds against the HTTP/SSE API directly, never the chat UI — POST /sessions, POST /sessions/{id}/turns (stream:true → SSE), watch for `tool.approval_required` events, resume with a turn whose input is `{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny"}}`. Reconnects use GET /turns/{id}/subscribe?after_sequence_number=. Confirmed against the live server's own OpenAPI schema, not just docs (T-002)
+2026-08-25 · [O2] · RDAP lookups go through `rdap.org/domain/{domain}` with redirects followed, not hardcoded per-registry servers — one entry point, confirmed fast (~0.5s) and correct
+2026-08-25 · [O2] · URLhaus now requires the `Auth-Key` header on every endpoint, including read-only host/url lookups, not just submissions — code the intel client assuming auth is mandatory everywhere
 ```
 
 ---
@@ -140,6 +143,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. **Fixed — T-017 done, confirmed working** |
 | 2026-08-25 | O1 | Driving `wsl.exe` from this Bash tool (which is Git Bash/MSYS) silently mangled `/mnt/c/...` paths — MSYS rewrites leading `/` args before handing them to native exes, turning `/mnt/c/...` into `C:/Program Files/Git/mnt/c/...`. Also: separate `wsl -d Ubuntu -- bash -lc "..."` calls don't share state — WSL2 tears the instance down ~8s after the last process exits, killing anything backgrounded with plain `&`/`nohup` between calls | Prefix the command with `MSYS_NO_PATHCONV=1` to stop the path rewrite. Do the whole start-and-poll-and-verify sequence in **one** `wsl` invocation (one script), not several — that's also what actually needs `setsid ... </dev/null` to background cleanly within that one call |
 | 2026-08-25 | O1 | `harness/README.md` fell out of date **within the same PR** — T-017 fixed the Windows segfault and runtime-verified `agent.json`, but the README's "known issue" section still read as unresolved. Qodo's first-pass review caught it (2 Medium findings) rather than us | When a task's result changes something already documented elsewhere in the same branch, update that doc in the *same commit* as the fix, don't leave stale wording for review to catch |
+| 2026-08-25 | O2 | crt.sh returned 502 on 7/7 live attempts against two different domains, in-line with the known trap | Ship the 5s timeout + SQLite cache from day one (T-045) — don't wait for it to fail in front of a judge |
+| 2026-08-25 | O2 | No `.env.example` existed even though a real `.env` with `URLHAUS_AUTH_KEY` was already in the repo (gitignored, untracked — never committed) | Added `.env.example` with the key name and no value; do this for every new secret going forward |
 
 ---
 
@@ -284,7 +289,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 1 — ugly vertical slice (Day 1)
 *One hardcoded fixture → parse → one subagent → hardcoded verdict → one approval gate → cockpit shows it. It will be hideous. It must run before anyone sleeps.*
-- **T-010** [O2] Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256
 - **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
