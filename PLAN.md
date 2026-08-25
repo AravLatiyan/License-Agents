@@ -28,14 +28,14 @@ Sections §1–§8 are living. Sections §9–§18 are the reference and change 
 # §1 LIVE STATUS
 
 ```
-PHASE:        DAY 0 — SPIKES + SCAFFOLD
-DATE:         2026-08-24
-DAYS LEFT:    6
-ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
-DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: All three spikes answered. Repo public. Qodo installed. First PRs open.
-BLOCKED ON:   Spike 1 (chromium in Daytona) — decides whether detonation is visual or text-mode
-LAST UPDATED: 2026-08-24 · scaffold created
+PHASE:        DAY 1 — SLICE 1 (ugly vertical slice)
+DATE:         2026-08-25
+DAYS LEFT:    5
+ACTIVE:       Owner 1 (Harness)
+DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
+TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
+BLOCKED ON:   nothing
+LAST UPDATED: 2026-08-25 11:53 · T-001 timeboxed out with zero shipped work, forced to fallback
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -57,7 +57,7 @@ LAST UPDATED: 2026-08-24 · scaffold created
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-001** | **SPIKE 1** — headless chromium in a Daytona sandbox returning a screenshot + redirect chain. **Measure the SECOND run, not just the first** | O1 | 3h ⏱ | **Highest-risk unknown in the project.** A 4-min install that passes in testing dies on camera — cold start is a demo problem, not a capability one |
+| 1 | **T-013** | `harness/agent.json` — first saved agent: model + instructions + connectors | O1 | — | Detonation is now confirmed text-mode fallback (T-001 timed out unshipped) — build the agent config that everything else, including the fallback job, hangs off |
 | 2 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
@@ -120,6 +120,7 @@ _(nothing yet — first entry goes here)_
 2026-08-24 · [all] · Approval gates are FOUR SEQUENTIAL per-tool-call gates, not one modal with four checkboxes — TrueForge's native approval is per tool call, boolean, and shows the JSON request. We configure it in agent.json, we do not build it. Four stopping moments is also more cinematic than one modal
 2026-08-24 · [all] · Sandbox lifecycle is TrueForge's job, not ours — we only write what runs inside it. Spike 1 must measure SECOND-RUN time, not just whether chromium installs: a 4-min install that works in testing dies on camera
 2026-08-24 · [all] · Qodo installed and left alone — it is half of judging criterion 04 which is scored on EVERY submission regardless of track. 10 min setup, zero ongoing. We are NOT chasing the Best Code Quality track itself; four iPads on Best UI beats one Mac Mini split four ways
+2026-08-25 · [O1] · Detonation defaults to TEXT-MODE FALLBACK (HTTP redirect chain, HTML parse, form-target extraction) — Spike 1 (chromium in Daytona) never produced committed work inside its 3h box, box expired ~9h unattended. Screenshot detonation is now a stretch goal only, revisited if Slice 1–3 land early
 ```
 
 ---
@@ -130,7 +131,7 @@ _(nothing yet — first entry goes here)_
 
 | Date | Owner | What bit us | What to do instead |
 |---|---|---|---|
-| _(nothing yet)_ | | | |
+| 2026-08-25 | O1 | T-001 picked, timeboxed, session ended with no commit — nothing landed in git, no files, no findings. ~9h lost to Day 0 gate before anyone noticed the box had expired | Commit as you go, not just at task end. If a session might end mid-task, commit a WIP note to PLAN.md §3 at minimum so the next session can see real elapsed state, not just a stale timestamp |
 
 ---
 
