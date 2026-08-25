@@ -1,22 +1,25 @@
 // contracts/events.ts
 //
-// Shared event/type contract between the harness (O1), tools (O2), and the
-// Cockpit (O3). Two layers:
+// Shared contract between the harness (O1), tools (O2), and Cockpit (O3).
+// Layer 1: TrueForge's wire-level approval/session schema, confirmed live
+// in T-002 (PLAN.md §6). Layer 2: MissionEvent, one variant per §10
+// architecture stage, which is what T-050/T-036 bind to.
 //
-//   1. TrueForge wire-level primitives — the approval/session schema
-//      confirmed live against the running server's own OpenAPI schema in
-//      T-002 (PLAN.md §6, 2026-08-25). Not invented; copied from that finding.
-//
-//   2. MissionEvent — our own higher-level event stream, one variant per
-//      stage of PLAN.md §10's architecture diagram (message -> 3 parallel
-//      subagents + detonation -> verdict -> 4 sequential licence gates ->
-//      execute -> done). This is what Cockpit's T-050 scaffold consumes to
-//      render the mission end to end, and what T-036's LICENCE REQUIRED
-//      panel binds to for each gate.
-//
-// PLAN.md §11 T-016 is the only source of truth for scope here — this file
-// does not implement T-050/T-036/T-052, it only defines the shapes those
-// tasks will need.
+// MAINTENANCE (Qodo finding #6, T-016 remediation, 2026-08-26):
+// - Shape source of truth is the actual producer code — harness/detonate.js
+//   for DetonationResult, TrueForge's live schema (§6/T-002) for the
+//   approval primitives, the MCP tool implementations (once merged) for
+//   the rest of §10's table. Never PLAN.md prose alone.
+// - A PR that changes a producer's output shape updates this file in the
+//   same PR — Qodo's T-016 review caught exactly that drift once already.
+// - A change here that affects a fixture-used shape updates the fixture
+//   in the same PR.
+// - /contracts needs 2 approvals (CLAUDE.md) — route the producer-owning
+//   owner (O1/O2) plus one other reviewer on any contract change.
+// - Cockpit code imports types from here; it never redeclares them.
+// - Validate before every push:
+//     npx -p typescript tsc --noEmit --strict contracts/events.ts contracts/events.typecheck.ts
+//     python3 -m json.tool contracts/fixtures/mission-happy-path.json
 
 // ---------------------------------------------------------------------------
 // 1. TrueForge wire-level primitives (T-002, PLAN.md §6)
@@ -28,8 +31,7 @@ export interface ToolCallRequest {
   arguments: Record<string, unknown>;
 }
 
-/** Emitted over SSE from POST /sessions/{id}/turns (stream:true) when a
- *  gated tool call needs a human decision. */
+/** SSE from POST /sessions/{id}/turns when a gated tool call needs a decision. */
 export interface ToolApprovalRequiredEvent {
   type: "tool.approval_required";
   id: string;
@@ -45,10 +47,7 @@ export interface ToolApprovalResume {
   type: "user.tool_approval";
   thread_id: string;
   tool_call_id: string;
-  approval: {
-    status: ApprovalStatus;
-    reason?: string;
-  };
+  approval: { status: ApprovalStatus; reason?: string };
 }
 
 /** Reconnects use GET /turns/{id}/subscribe?after_sequence_number=N */
@@ -58,7 +57,7 @@ export interface TurnStreamSubscription {
 }
 
 // ---------------------------------------------------------------------------
-// 2. MCP tool result shapes (PLAN.md §10, "MCP tool surface" table)
+// 2. MCP tool result shapes (PLAN.md §10 tool table + real producer code)
 // ---------------------------------------------------------------------------
 
 export interface ParsedMessage {
@@ -75,7 +74,7 @@ export interface ParsedMessage {
 
 export interface DomainIntel {
   domain: string;
-  registration_date: string | null; // null = "not published" (PLAN.md §12), never treated as an error
+  registration_date: string | null; // null = "not published" (§12), never an error
   registrar: string | null;
   abuse_contact: string | null;
   cert_issued_at: string | null;
@@ -83,7 +82,7 @@ export interface DomainIntel {
 
 export interface UrlReputation {
   url: string;
-  listed: boolean; // URLhaus is a weak signal only (PLAN.md §12 / CLAUDE.md trap #8) — "not listed" != safe
+  listed: boolean; // weak signal only (§12/CLAUDE.md trap #8) — "not listed" != safe
   tags: string[];
 }
 
@@ -96,55 +95,76 @@ export interface CorrespondenceHistory {
   domains_used: string[];
 }
 
-/** §10's IDENTITY lane ("display-name vs reply-to, lookalike domain") has no
- *  dedicated MCP tool of its own in the §10 tool table — it's derived from
- *  fields already present on ParsedMessage. Worded directly from that
- *  diagram text; see PLAN.md §8 for the note flagging this to O1/O2. */
+/** §10's IDENTITY lane has no dedicated tool — derived from ParsedMessage
+ *  fields. Worded from the diagram text; see §8 (needs O1/O2 confirmation). */
 export interface IdentityEvidence {
   from_address: string;
   display_name: string | null;
   reply_to: string | null;
   lookalike_domain: boolean;
-  lookalike_of: string | null; // the legitimate domain being impersonated, if known
+  lookalike_of: string | null;
 }
 
-export interface DetonationForm {
-  action: string | null;
-  action_invalid?: boolean; // matches harness/detonate.js's shape (T-014, Qodo pass)
-  asks_for_password: boolean;
-  posts_cross_domain: boolean;
-}
+// --- Detonation: modeled directly from harness/detonate.js, not invented ---
 
-export interface DetonationResult {
+export interface RedirectHop {
   url: string;
-  redirect_chain: string[];
-  final_url?: string;
-  forms?: DetonationForm[];
-  screenshot_id?: string; // never base64 in the event, per CLAUDE.md trap #12
-  summary: string;
-  error?: string;
+  status: number;
 }
+
+/** One <form>. Mirrors detonate.js's extractForms() exactly: a form with an
+ *  unparseable `action` still reports action/method/asks_password, but
+ *  action_origin/cross_domain can't be computed (action_invalid: true). */
+export type DetonationForm =
+  | {
+      action: string;
+      action_origin: string;
+      method: string;
+      cross_domain: boolean;
+      asks_password: boolean;
+      action_invalid?: false;
+    }
+  | {
+      action: string;
+      action_origin: null;
+      method: string;
+      cross_domain: null;
+      asks_password: boolean;
+      action_invalid: true;
+    };
+
+/** detonate() returns exactly one of these two shapes — never throws.
+ *  Error branch (bad scheme, DNS/timeout/redirect-loop/oversized body):
+ *  no final_url/forms/summary. Success branch: no error. */
+export type DetonationResult =
+  | { url: string; redirect_chain: RedirectHop[]; error: string }
+  | {
+      url: string;
+      redirect_chain: RedirectHop[];
+      final_url: string;
+      forms: DetonationForm[];
+      summary: string;
+      screenshot_id?: string; // stretch goal, §6 — detonate.js never sets this yet
+    };
 
 // ---------------------------------------------------------------------------
 // 3. Mission-level events — one per §10 architecture stage / §17 demo beat.
-//    This is the stream Cockpit's T-050 scaffold consumes start to finish.
 // ---------------------------------------------------------------------------
 
-export type EvidenceLane = "infrastructure" | "identity" | "history";
+/** Lane and evidence shape are paired per-variant so `lane: "history"` with
+ *  `DomainIntel` evidence is a type error, not just a runtime mismatch
+ *  (Qodo finding #4). See contracts/events.typecheck.ts for a compiled proof. */
+export type EvidenceEvent =
+  | { type: "mission.evidence"; mission_id: string; lane: "infrastructure"; evidence: DomainIntel | UrlReputation }
+  | { type: "mission.evidence"; mission_id: string; lane: "identity"; evidence: IdentityEvidence }
+  | { type: "mission.evidence"; mission_id: string; lane: "history"; evidence: CorrespondenceHistory };
+
+export type EvidenceLane = EvidenceEvent["lane"];
 
 export interface MessageReceivedEvent {
   type: "mission.message_received";
   mission_id: string;
   message: ParsedMessage;
-}
-
-/** One of the three parallel subagents (§10) reporting structured evidence,
- *  never prose (T-024's requirement, carried into the contract). */
-export interface EvidenceEvent {
-  type: "mission.evidence";
-  mission_id: string;
-  lane: EvidenceLane;
-  evidence: DomainIntel | UrlReputation | CorrespondenceHistory | IdentityEvidence;
 }
 
 export interface DetonationEvent {
@@ -159,7 +179,7 @@ export interface VerdictEvent {
   type: "mission.verdict";
   mission_id: string;
   verdict: VerdictLabel;
-  summary: string; // plain English, <=4 sentences, no jargon (§11 T-054)
+  summary: string; // plain English, <=4 sentences (§11 T-054)
 }
 
 export type ProposedActionName =
@@ -173,10 +193,8 @@ export interface ProposedAction {
   arguments: Record<string, unknown>;
 }
 
-/** Cockpit's LICENCE REQUIRED panel (T-036) binds to this. It carries the
- *  real ToolApprovalRequiredEvent inline so Cockpit renders gates off one
- *  mission stream rather than a second TrueForge connection. Four sequential
- *  gates, never one modal with four checkboxes (§6, 2026-08-24). */
+/** T-036's LICENCE REQUIRED panel binds to this. Carries the real
+ *  ToolApprovalRequiredEvent inline. Four sequential gates (§6, 2026-08-24). */
 export interface ApprovalRequiredEvent {
   type: "mission.approval_required";
   mission_id: string;
@@ -205,7 +223,7 @@ export interface ActionExecutedEvent {
 export interface MissionCompleteEvent {
   type: "mission.complete";
   mission_id: string;
-  spoken_verdict: string; // §17, 2:40-3:00 — Web Speech API text (T-043)
+  spoken_verdict: string; // §17 2:40-3:00 — Web Speech API text (T-043)
 }
 
 export type MissionEvent =
