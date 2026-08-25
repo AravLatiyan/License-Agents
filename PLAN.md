@@ -34,8 +34,8 @@ DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
-BLOCKED ON:   T-002 — local TrueForge server crashes on Windows (§5, §7)
-LAST UPDATED: 2026-08-25 12:05 · T-013 done, Windows segfault found and logged
+BLOCKED ON:   nothing
+LAST UPDATED: 2026-08-25 12:24 · T-017 done — WSL2 fix confirmed, T-002 unblocked
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -45,7 +45,7 @@ LAST UPDATED: 2026-08-25 12:05 · T-013 done, Windows segfault found and logged
 - [ ] `main` protected: require a PR, require one review
 - [ ] Everyone **registered** for the hackathon (free, one form)
 - [ ] Everyone **starred `github.com/truefoundry/trueforge`** (free prize draw)
-- [ ] `node --version` ≥ 22 · `npx @truefoundry/trueforge` → `localhost:8790`
+- [x] `node --version` ≥ 22 · `npx @truefoundry/trueforge` → `localhost:8790` — **on Windows, run this from WSL2 with Node installed inside the distro, not native Windows (segfaults). See §7**
 - [ ] Model provider configured · **hard spend cap set on the API key**
 - [ ] Everyone has opened **at least one PR today**
 
@@ -57,7 +57,7 @@ LAST UPDATED: 2026-08-25 12:05 · T-013 done, Windows segfault found and logged
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
+| 1 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | Unblocked (T-017 done, WSL2 confirmed working). The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
 | 2 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
@@ -93,6 +93,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 > Append-only. Format: `YYYY-MM-DD · T-XXX · [Owner] · what shipped — result`
 
 2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
+2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
 
 ---
 
@@ -100,7 +101,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| T-002 | O1 | Local TrueForge server crashes on this Windows machine before it can be tested (see §7) | 2026-08-25 12:05 | Whoever fixes T-017 (Node-in-WSL), or run the spike from a teammate's Mac/Linux machine |
+| _(nothing)_ | | | | |
 
 ---
 
@@ -132,7 +133,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | Date | Owner | What bit us | What to do instead |
 |---|---|---|---|
 | 2026-08-25 | O1 | T-001 picked, timeboxed, session ended with no commit — nothing landed in git, no files, no findings. ~9h lost to Day 0 gate before anyone noticed the box had expired | Commit as you go, not just at task end. If a session might end mid-task, commit a WIP note to PLAN.md §3 at minimum so the next session can see real elapsed state, not just a stale timestamp |
-| 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. Filed as T-017 |
+| 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. **Fixed — T-017 done, confirmed working** |
+| 2026-08-25 | O1 | Driving `wsl.exe` from this Bash tool (which is Git Bash/MSYS) silently mangled `/mnt/c/...` paths — MSYS rewrites leading `/` args before handing them to native exes, turning `/mnt/c/...` into `C:/Program Files/Git/mnt/c/...`. Also: separate `wsl -d Ubuntu -- bash -lc "..."` calls don't share state — WSL2 tears the instance down ~8s after the last process exits, killing anything backgrounded with plain `&`/`nohup` between calls | Prefix the command with `MSYS_NO_PATHCONV=1` to stop the path rewrite. Do the whole start-and-poll-and-verify sequence in **one** `wsl` invocation (one script), not several — that's also what actually needs `setsid ... </dev/null` to background cleanly within that one call |
 
 ---
 
@@ -282,7 +284,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-014** [O1] Detonation sandbox job (or its text-mode fallback) returning structured JSON
 - **T-015** [O1] One approval gate wired end to end, action behind it may be a stub
 - **T-016** [O1+O2] `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json`
-- **T-017** [O1] Get TrueForge running on this Windows box — install Node inside WSL2 Ubuntu (not native Windows, it segfaults) and run from there; then runtime-verify `harness/agent.json` with a live `POST /api/v1/agents`. Unblocks T-002
 
 ## Slice 2 — intelligence (Day 2)
 - **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
