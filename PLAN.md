@@ -34,8 +34,8 @@ DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
-BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-review fixes and 2 finding dismissals) done, PR #3 Qodo-clean (0 bugs, 0 rule violations), awaiting merge decision
+BLOCKED ON:   T-015 live-fire test — no model provider configured (§5)
+LAST UPDATED: 2026-08-25 23:20 · PR #1, #2, #3 merged, T-014 (incl. Qodo fixes) fully on main; T-015 gate wiring proven, live-fire still blocked; rebasing T-015 branch onto main
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-revi
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-015 | O1 | 2026-08-25 16:47 | 45min | Scoped down already: no model provider key exists yet, so this is wiring-only (stub MCP server + agent.json approval config), live-fire test deferred and logged in §5. If even the wiring stalls, document the config shape without live registration, log, move on |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -96,6 +96,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
 2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
 2026-08-25 · T-014 · [O1] · `harness/detonate.js` — text-mode detonation: follows redirects (manual, capped at 10 hops, non-http(s) schemes refused), parses final HTML with `node-html-parser` (never regex, per §12), flags forms that ask for a password and post cross-domain. Self-tested against a local-only fixture server (`harness/detonate.test.js`, `node --test`, 3/3 pass) — never touched a real domain (§13). `harness/package.json` added (one dependency: `node-html-parser`); root `.gitignore` added (`node_modules/` wasn't excluded before) — result: returns `{url, redirect_chain, final_url, forms, summary}`, matches §10's `detonate(url)` shape minus the screenshot field
+2026-08-25 · T-015 · [O1] · One approval gate wired end to end, up to the point that needs a real model call. `harness/stub-mcp-server.js` — throwaway Streamable HTTP MCP server (TrueForge only supports `type: "remote"`/URL connectors, no local/stdio — confirmed against its own OpenAPI schema), one tool `quarantine_stub`. Registered live with TrueForge (`POST /settings/mcp-servers`, 201), tool discovered live (`GET /mcp-servers/{name}/tools`, 200, correct schema), and a test agent referencing `require_approval_for_tools: ["quarantine_stub"]` was accepted (`POST /agents`, only rejection was the expected "model provider not configured" 422) — result: **the gate wiring itself is proven correct**; the live-fire test (an actual `tool.approval_required` SSE event from a real turn) is deferred, see §5. `harness/agent.json` itself untouched — the stub connector only exists in a throwaway test payload, never the product config
 2026-08-25 · T-014 (Qodo pass) · [O1] · Fixed 5 real bugs Qodo's PR #3 review found: fetch/DNS/timeout/malformed-redirect failures now return `{url, redirect_chain, error}` instead of throwing; one malformed form `action` no longer aborts analysis of the rest of the page (represented with `action_invalid: true` instead); HTML content-type check is case-insensitive; response body is read with a hard byte cap (`readBodyWithLimit`, streamed, never fully buffered) before parsing; non-HTML success responses now return the full documented shape including `summary`. 10/10 tests pass (7 new regression tests added). Declined one finding — see §8
 
 ---
@@ -104,7 +105,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| _(nothing)_ | | | | |
+| T-015 live-fire test | O1 | No model provider configured anywhere (§1 DO THIS FIRST still unchecked). Gate wiring itself is proven (§4); what's missing is watching a real turn actually emit `tool.approval_required` and resuming it | 2026-08-25 | Whoever configures a model provider key + spend cap in TrueForge's settings UI (`localhost:8790`) — enter it there, never paste it into chat |
 
 ---
 
@@ -140,6 +141,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. **Fixed — T-017 done, confirmed working** |
 | 2026-08-25 | O1 | Driving `wsl.exe` from this Bash tool (which is Git Bash/MSYS) silently mangled `/mnt/c/...` paths — MSYS rewrites leading `/` args before handing them to native exes, turning `/mnt/c/...` into `C:/Program Files/Git/mnt/c/...`. Also: separate `wsl -d Ubuntu -- bash -lc "..."` calls don't share state — WSL2 tears the instance down ~8s after the last process exits, killing anything backgrounded with plain `&`/`nohup` between calls | Prefix the command with `MSYS_NO_PATHCONV=1` to stop the path rewrite. Do the whole start-and-poll-and-verify sequence in **one** `wsl` invocation (one script), not several — that's also what actually needs `setsid ... </dev/null` to background cleanly within that one call |
 | 2026-08-25 | O1 | `harness/README.md` fell out of date **within the same PR** — T-017 fixed the Windows segfault and runtime-verified `agent.json`, but the README's "known issue" section still read as unresolved. Qodo's first-pass review caught it (2 Medium findings) rather than us | When a task's result changes something already documented elsewhere in the same branch, update that doc in the *same commit* as the fix, don't leave stale wording for review to catch |
+| 2026-08-25 | O1 | Running `node`/`npm` from WSL2 against this repo (`/mnt/c/...`, which is also OneDrive-synced) is **pathologically slow for anything touching `node_modules`** — a plain dynamic `import()` of an installed package hung 8+ seconds with zero output, no error. Copying the same `node_modules` to WSL's native filesystem (`/tmp/...`) and running from there: instant, worked first try | For any Node work done from WSL against this repo: either `npm install` and run from a native-WSL path (`/tmp/...` or `~/...`), copying source in, not `/mnt/c` directly — or accept real slowness. TrueForge itself is unaffected (its own `npx` cache lives in the WSL user profile, not `/mnt/c`) |
 
 ---
 
