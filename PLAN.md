@@ -34,8 +34,8 @@ DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
-BLOCKED ON:   PR #1 — Qodo re-review pending on 6fe4c6f (§5)
-LAST UPDATED: 2026-08-25 · pushed Qodo fixes to PR #1, waiting on re-review before next task
+BLOCKED ON:   nothing
+LAST UPDATED: 2026-08-25 15:48 · PR #1 merged (59f8cac) — T-013, T-017, T-002 all shipped on main
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -102,7 +102,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| PR #1 | O1 | Qodo re-review pending on `6fe4c6f` (fixed 2 Medium findings from first pass). **Do not merge, do not start new work on `harness/plan-sync-day1`** until it's clean | 2026-08-25 | Qodo posting the re-review — check PR #1 manually |
+| _(nothing)_ | | | | |
 
 ---
 
@@ -137,6 +137,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | 2026-08-25 | O1 | T-001 picked, timeboxed, session ended with no commit — nothing landed in git, no files, no findings. ~9h lost to Day 0 gate before anyone noticed the box had expired | Commit as you go, not just at task end. If a session might end mid-task, commit a WIP note to PLAN.md §3 at minimum so the next session can see real elapsed state, not just a stale timestamp |
 | 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. **Fixed — T-017 done, confirmed working** |
 | 2026-08-25 | O1 | Driving `wsl.exe` from this Bash tool (which is Git Bash/MSYS) silently mangled `/mnt/c/...` paths — MSYS rewrites leading `/` args before handing them to native exes, turning `/mnt/c/...` into `C:/Program Files/Git/mnt/c/...`. Also: separate `wsl -d Ubuntu -- bash -lc "..."` calls don't share state — WSL2 tears the instance down ~8s after the last process exits, killing anything backgrounded with plain `&`/`nohup` between calls | Prefix the command with `MSYS_NO_PATHCONV=1` to stop the path rewrite. Do the whole start-and-poll-and-verify sequence in **one** `wsl` invocation (one script), not several — that's also what actually needs `setsid ... </dev/null` to background cleanly within that one call |
+| 2026-08-25 | O1 | `harness/README.md` fell out of date **within the same PR** — T-017 fixed the Windows segfault and runtime-verified `agent.json`, but the README's "known issue" section still read as unresolved. Qodo's first-pass review caught it (2 Medium findings) rather than us | When a task's result changes something already documented elsewhere in the same branch, update that doc in the *same commit* as the fix, don't leave stale wording for review to catch |
 
 ---
 
