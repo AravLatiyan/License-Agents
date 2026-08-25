@@ -59,8 +59,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-012** | `imports-mcp` skeleton with `parse_message` working end to end | O2 | | Normaliser (T-010) and fixtures (T-011) exist — this is where they become the first real MCP tool |
-| 4 | **T-020** | `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age, as a second `imports-mcp` tool | O2 | | RDAP/crt.sh already confirmed live in T-003; queued behind T-012 |
+| 3 | **T-020** | `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age, as a second `imports-mcp` tool | O2 | | RDAP/crt.sh already confirmed live in T-003; queued behind T-012 |
 
 ⏱ = has a timebox. See §3.
 
@@ -73,7 +72,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-012 | O2 | 2026-08-25 18:02 | 2h | Ship `parse_message` reachable via a minimal local test harness (bypassing the HTTP transport) if the Python MCP SDK setup stalls; log the gap in §7, move to T-016, come back |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
