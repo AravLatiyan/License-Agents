@@ -33,9 +33,9 @@ DATE:         2026-08-25
 DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
 DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: Slice 1 running end to end, ugly (O1). imports-mcp skeleton + parse_message done, domain_intel next (O2).
+TODAY'S GOAL: Slice 1 running end to end, ugly (O1). domain_intel done, url_reputation next (O2).
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); T-003, T-004, T-010, T-011, T-012 done (O2)
+LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+Qodo-fixes all on main); T-003, T-004, T-010, T-011, T-012, T-020 done (O2)
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -60,6 +60,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
 | 3 | **T-021** | `url_reputation` — URLhaus, as a third `imports-mcp` tool | O2 | | Auth-Key already confirmed live in T-003; same pattern as T-020 |
+| 4 | **T-022** | `correspondence_history` — IMAP search for prior contact | O2 | | Last O2 Slice-2 intel tool; needs an IMAP mailbox + app password first (trap #3: never the Gmail API) |
 
 ⏱ = has a timebox. See §3.
 
@@ -72,7 +73,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-020 | O2 | 2026-08-25 19:11 | 2h | Cache crt.sh hard; treat missing RDAP fields as "not published" rather than an error (§3's standing rule for intel APIs) |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -100,6 +101,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-004 · [O2] Read `bring-your-own-mcp` cookbook example (README, agent.json, mcp-server.mjs, package.json) end to end — settles trap #1 (transport mismatch) before any MCP code gets written
 2026-08-25 · T-010 · [O2] Normaliser (`tools/imports_mcp/normaliser.py`) — RFC822 parse via stdlib `email`, URLs via `lxml.html` (href + anchor text, plain-text bare-URL fallback), attachment SHA256, raw Authentication-Results/Received chains passed through unverified. Smoke-tested against a synthetic phish + a synthetic legit mail, both correct
 2026-08-25 · T-011 · [O2] 3 fixtures in `tools/fixtures/` — credential phish (SPF/DKIM/DMARC fail, raw-IP href vs polished anchor text), invoice fraud/BEC (homograph lookalike domain `universaI-imports.co` where auth actually PASSES, reply-to redirected to a third domain, PDF attachment), and one legitimate mail that must not trip anything. All hand-written `Authentication-Results`/`Received` headers per trap #11. Ran the T-010 normaliser against all three — every signal (auth fail, href/anchor mismatch, reply-to mismatch, attachment hash) came through correctly
+2026-08-25 · T-020 · [O2] `domain_intel` (`tools/imports_mcp/domain_intel.py`) — RDAP registration/registrar/abuse-contact + crt.sh cert age, wired as a second `imports-mcp` tool. Each source degrades independently to `available=false` + a note instead of raising; crt.sh results cached in-memory (never caches a transient failure, only a real answer). crt.sh was down the entire time this was built — that's a live-fire test of the fallback, not a hypothetical one. Hit and fixed a real local SSL bug along the way (see §7). 12 new tests (8 mocked-network unit tests + 3 tool-wiring contract tests + 1 more live end-to-end test alongside T-012's over the real transport) — 24/24 total pass
 2026-08-25 · T-012 · [O2] `imports-mcp` skeleton (`tools/imports_mcp/server.py`) — one tool, `parse_message(fixture)`, wired to the T-010 normaliser against the T-011 fixtures. Streamable HTTP per T-004, whitelisted fixture lookup (rejects unknown names and path traversal via `ToolError`, not a bare exception). 11 tests: 9 contract-level (direct function calls, no server) + 2 real end-to-end over the actual HTTP transport with the official MCP client — all pass
 
 ---
@@ -133,6 +135,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · [O2] · RDAP lookups go through `rdap.org/domain/{domain}` with redirects followed, not hardcoded per-registry servers — one entry point, confirmed fast (~0.5s) and correct
 2026-08-25 · [O2] · URLhaus now requires the `Auth-Key` header on every endpoint, including read-only host/url lookups, not just submissions — code the intel client assuming auth is mandatory everywhere
 2026-08-25 · [O2] · `imports-mcp` is Streamable HTTP via the official **Python** MCP SDK's `MCPServer` — **not** Express/JS. The `bring-your-own-mcp` cookbook (which is Node/Express) only settled the transport *shape* (Streamable HTTP, not stdio); the language/SDK is Python per the decision directly below, since `/tools` is Python. Registered in TrueForge via Settings → Connectors then referenced by name in `agent.json`
+2026-08-25 · [O2] · Any Python code in `/tools` making HTTPS calls must `import truststore; truststore.inject_into_ssl()` before the first request — see §7, this isn't optional on every machine
+2026-08-25 · [O2] · crt.sh results are cached in-memory only for now (module-level dict, cleared on restart) — good enough for a single mission run; T-045 upgrades this to SQLite, don't build that early
 2026-08-25 · [O2] · `imports-mcp` runs `stateless_http=True` **with `json_response=True`** — the default SSE response mode hung forever on a tool error under statelessness (see §7). Every future tool in this server inherits this config, don't change it without re-testing the error path
 2026-08-25 · [O2] · Raise `mcp.server.mcpserver.exceptions.ToolError` for anticipated tool failures, not a bare exception — a bare exception gets wrapped into a generic "Error executing tool X" and the real reason never reaches the model; `ToolError` preserves the message and skips the noisy traceback log
 2026-08-25 · [O2] · `/tools` is Python — stdlib `email` for RFC822 parsing, `lxml` for HTML (per the trap in §12), MCP server on the official Python MCP SDK's streamable-HTTP transport to match T-004's findings
@@ -152,6 +156,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | 2026-08-25 | O1 | `harness/README.md` fell out of date **within the same PR** — T-017 fixed the Windows segfault and runtime-verified `agent.json`, but the README's "known issue" section still read as unresolved. Qodo's first-pass review caught it (2 Medium findings) rather than us | When a task's result changes something already documented elsewhere in the same branch, update that doc in the *same commit* as the fix, don't leave stale wording for review to catch |
 | 2026-08-25 | O2 | crt.sh returned 502 on 7/7 live attempts against two different domains, in-line with the known trap | Ship the 5s timeout + SQLite cache from day one (T-045) — don't wait for it to fail in front of a judge |
 | 2026-08-25 | O2 | No `.env.example` existed even though a real `.env` with `URLHAUS_AUTH_KEY` was already in the repo (gitignored, untracked — never committed) | Added `.env.example` with the key name and no value; do this for every new secret going forward |
+| 2026-08-25 | O2 | `requests` failed SSL verification on every HTTPS call (`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`) even though `curl` on the same machine worked fine. Root cause: Norton Antivirus does local TLS inspection and generates its own root CA (`Norton Web/Mail Shield Root`), which Windows trusts (curl uses the OS store via schannel) but `certifi`'s fixed CA bundle does not | Add `truststore` and call `truststore.inject_into_ssl()` before any HTTPS request — it points the stdlib `ssl` module (and therefore `requests`/`httpx`) at the OS trust store instead of `certifi`. **Not a one-off**: any teammate running AV with TLS inspection will hit the exact same wall on any Python HTTP call, not just this one |
 | 2026-08-25 | O2 | `imports-mcp` server hung forever (never returned, client never timed out) on the very first error-path tool call — `stateless_http=True` combined with the default SSE response mode (`json_response=False`) apparently never closes the event stream when a tool raises. Cost ~15 min to bisect with a background process + hard-timeout client before finding it | Pass `json_response=True` alongside `stateless_http=True` for any single-purpose stateless MCP tool server — plain JSON responses, no SSE needed for a request that's just "call one tool, get one answer" |
 | 2026-08-25 | O2 | `python` on PATH in Git Bash resolves to an MSYS2 build (`C:\msys64\ucrt64\bin\python.exe`) with no PyPI wheels for compiled packages — `pip install lxml` tried to compile from source and failed on a missing `libxml/xpath.h` | Use the python.org install instead (`py -3` or the full path under `AppData\Local\Programs\Python\`) when creating `tools/.venv` — every O2 teammate on Windows needs to know this |
 
@@ -301,7 +306,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
 
 ## Slice 2 — intelligence (Day 2)
-- **T-022** [O2] `correspondence_history` — IMAP search for prior contact
 - **T-023** [O1] Three subagents — INFRASTRUCTURE / IDENTITY / HISTORY, running in parallel
 - **T-024** [O1] Prompt subagents to return **structured evidence, not prose**; narrow remits so they don't duplicate work
 - **T-025** [O1] Cheap model for subagents, strong model for the lead

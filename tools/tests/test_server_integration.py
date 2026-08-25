@@ -1,10 +1,12 @@
-"""End-to-end test (T-012): real Streamable HTTP transport, real MCP client.
+"""End-to-end tests (T-012, T-020): real Streamable HTTP transport, real
+MCP client, and for domain_intel, real RDAP/crt.sh network calls too.
 
-Spins tools/imports_mcp/server.py as a subprocess on a dedicated test port,
-connects with the official MCP client, and calls parse_message for real.
-This is what actually proves the T-004 transport decision works, not just
-that the underlying Python function is correct (test_server_contract.py
-already covers that without paying for a server).
+Spins tools/imports_mcp/server.py as a subprocess on a dedicated test port
+and connects with the official MCP client. This is what actually proves
+the T-004 transport decision (and the T-020 network wiring) works, not
+just that the underlying Python functions are correct - those are already
+covered without paying for a server in test_server_contract.py and
+test_domain_intel.py.
 """
 
 from __future__ import annotations
@@ -60,13 +62,17 @@ def running_server():
             proc.kill()
 
 
-async def _call_parse_message(url: str, fixture: str):
+async def _call_tool(url: str, name: str, arguments: dict):
     async with streamable_http_client(url) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             tools = await session.list_tools()
-            result = await session.call_tool("parse_message", {"fixture": fixture})
+            result = await session.call_tool(name, arguments)
             return tools, result
+
+
+async def _call_parse_message(url: str, fixture: str):
+    return await _call_tool(url, "parse_message", {"fixture": fixture})
 
 
 def test_parse_message_reachable_over_streamable_http(running_server):
@@ -82,3 +88,22 @@ def test_unknown_fixture_returns_error_over_the_wire(running_server):
     _, result = anyio.run(_call_parse_message, running_server, "nope.eml")
     assert result.is_error
     assert "Unknown fixture" in result.content[0].text
+
+
+def test_domain_intel_reachable_over_streamable_http(running_server):
+    """Real RDAP/crt.sh calls, not mocked - proves the whole path is wired,
+    not just the HTTP transport. Only asserts on RDAP: crt.sh has been down
+    (502) throughout this feature's development (PLAN.md §7), and
+    domain_intel is specifically designed to degrade that gracefully rather
+    than fail the call, so asserting on it here would make this test as
+    flaky as crt.sh itself."""
+    tools, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": "google.com"})
+
+    assert "domain_intel" in [t.name for t in tools.tools]
+    assert not result.is_error
+    assert "MarkMonitor" in result.content[0].text
+
+
+def test_domain_intel_empty_domain_returns_error_over_the_wire(running_server):
+    _, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": ""})
+    assert result.is_error
