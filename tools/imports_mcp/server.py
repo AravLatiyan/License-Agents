@@ -1,12 +1,13 @@
-"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020).
+"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021).
 
 Streamable HTTP, stateless per request. This is the Python-SDK equivalent of
 the bring-your-own-mcp cookbook example (T-004): same transport, same
 "register in TrueForge Settings, reference by name in agent.json" pattern.
 
 Tools:
-  parse_message  - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
-  domain_intel   - RDAP registration/abuse + crt.sh cert age (Slice 2)
+  parse_message   - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
+  domain_intel    - RDAP registration/abuse + crt.sh cert age (Slice 2)
+  url_reputation  - URLhaus exact-URL lookup (Slice 2)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.normaliser import parse_message as _parse_message
+from imports_mcp.url_reputation import url_reputation as _url_reputation
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -161,6 +163,20 @@ def domain_intel(domain: str) -> dict[str, Any]:
     if not domain:
         raise ToolError("domain must not be empty")
     return _domain_intel(domain)
+
+
+@mcp.tool()
+def url_reputation(url: str) -> dict[str, Any]:
+    """URLhaus verdict for one exact URL.
+
+    URLhaus is malware-focused, not phishing-focused: "not listed" is weak
+    evidence only, never a verdict on its own — never build a demo beat on
+    a URLhaus hit alone.
+    """
+    url = url.strip()
+    if not url:
+        raise ToolError("url must not be empty")
+    return _url_reputation(url)
 
 
 if __name__ == "__main__":

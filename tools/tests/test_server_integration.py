@@ -132,3 +132,19 @@ def test_domain_intel_reachable_over_streamable_http(running_server):
 def test_domain_intel_empty_domain_returns_error_over_the_wire(running_server):
     _, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": ""})
     assert result.is_error
+
+
+def test_url_reputation_reachable_over_streamable_http(running_server):
+    """Real URLhaus call, not mocked - URLhaus (unlike crt.sh) has been
+    reliably up throughout T-003/T-021, so unlike domain_intel's test this
+    one can assert on the actual verdict, not just reachability."""
+    tools, result = anyio.run(_call_tool, running_server, "url_reputation", {"url": "https://example.com/"})
+
+    assert "url_reputation" in [t.name for t in tools.tools]
+    assert not result.is_error
+    assert "not listed" in result.content[0].text
+
+
+def test_url_reputation_empty_url_returns_error_over_the_wire(running_server):
+    _, result = anyio.run(_call_tool, running_server, "url_reputation", {"url": ""})
+    assert result.is_error
