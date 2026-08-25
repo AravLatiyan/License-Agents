@@ -34,8 +34,8 @@ DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
-BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 12:28 · T-002 answered YES — cockpit builds on the HTTP API directly
+BLOCKED ON:   PR #1 — Qodo re-review pending on 6fe4c6f (§5)
+LAST UPDATED: 2026-08-25 · pushed Qodo fixes to PR #1, waiting on re-review before next task
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -102,7 +102,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| _(nothing)_ | | | | |
+| PR #1 | O1 | Qodo re-review pending on `6fe4c6f` (fixed 2 Medium findings from first pass). **Do not merge, do not start new work on `harness/plan-sync-day1`** until it's clean | 2026-08-25 | Qodo posting the re-review — check PR #1 manually |
 
 ---
 
