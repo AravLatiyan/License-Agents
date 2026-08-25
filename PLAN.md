@@ -57,8 +57,8 @@ LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-revi
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
-| 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
+| 1 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
+| 2 | **T-010** | Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (href **and** anchor text), attachment SHA256 | O2 | — | Slice 1's first link — everything else in the chain needs parsed output |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
 
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-revi
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-015 | O1 | 2026-08-25 16:47 | 45min | Scoped down already: no model provider key exists yet, so this is wiring-only (stub MCP server + agent.json approval config), live-fire test deferred and logged in §5. If even the wiring stalls, document the config shape without live registration, log, move on |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -284,10 +284,8 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 1 — ugly vertical slice (Day 1)
 *One hardcoded fixture → parse → one subagent → hardcoded verdict → one approval gate → cockpit shows it. It will be hideous. It must run before anyone sleeps.*
-- **T-010** [O2] Normaliser: RFC822 parse — From/Reply-To/Return-Path/display name, `Authentication-Results`, Received chain, URLs (**both href and anchor text**), attachment SHA256
 - **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
-- **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
 
 ## Slice 2 — intelligence (Day 2)
 - **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
