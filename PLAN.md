@@ -59,8 +59,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-020** | `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age, as a second `imports-mcp` tool | O2 | | RDAP/crt.sh already confirmed live in T-003; `imports-mcp` skeleton (T-012) is now there to hang it on |
-| 4 | **T-021** | `url_reputation` — URLhaus, as a third `imports-mcp` tool | O2 | | Auth-Key already confirmed live in T-003; same pattern as T-020 |
+| 3 | **T-021** | `url_reputation` — URLhaus, as a third `imports-mcp` tool | O2 | | Auth-Key already confirmed live in T-003; same pattern as T-020 |
 
 ⏱ = has a timebox. See §3.
 
@@ -73,7 +72,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-020 | O2 | 2026-08-25 19:11 | 2h | Cache crt.sh hard; treat missing RDAP fields as "not published" rather than an error (§3's standing rule for intel APIs) |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -133,13 +132,9 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · [O1] · Cockpit (O3) builds against the HTTP/SSE API directly, never the chat UI — POST /sessions, POST /sessions/{id}/turns (stream:true → SSE), watch for `tool.approval_required` events, resume with a turn whose input is `{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny"}}`. Reconnects use GET /turns/{id}/subscribe?after_sequence_number=. Confirmed against the live server's own OpenAPI schema, not just docs (T-002)
 2026-08-25 · [O2] · RDAP lookups go through `rdap.org/domain/{domain}` with redirects followed, not hardcoded per-registry servers — one entry point, confirmed fast (~0.5s) and correct
 2026-08-25 · [O2] · URLhaus now requires the `Auth-Key` header on every endpoint, including read-only host/url lookups, not just submissions — code the intel client assuming auth is mandatory everywhere
-<<<<<<< HEAD
-2026-08-25 · [O2] · `imports-mcp` is Streamable HTTP via the official **Python** MCP SDK's `MCPServer` — **not** Express/JS. The `bring-your-own-mcp` cookbook (which is Node/Express) only settled the transport *shape* (Streamable HTTP, not stdio); the language/SDK is Python per the decision directly below, since `/tools` is Python. Runs `stateless_http=True` together with `json_response=True` — the default SSE response mode was later found (T-012) to hang forever on a tool error under statelessness, logged in §7 once that lands — registered in TrueForge via Settings → Connectors then referenced by name in `agent.json`
-=======
-2026-08-25 · [O2] · `imports-mcp` will be Streamable HTTP (Express + `@modelcontextprotocol/sdk/server/streamableHttp.js`), stateless per-request, registered in TrueForge via Settings → Connectors then referenced by name in `agent.json` — settled from the `bring-your-own-mcp` cookbook, not stdio
+2026-08-25 · [O2] · `imports-mcp` is Streamable HTTP via the official **Python** MCP SDK's `MCPServer` — **not** Express/JS. The `bring-your-own-mcp` cookbook (which is Node/Express) only settled the transport *shape* (Streamable HTTP, not stdio); the language/SDK is Python per the decision directly below, since `/tools` is Python. Registered in TrueForge via Settings → Connectors then referenced by name in `agent.json`
 2026-08-25 · [O2] · `imports-mcp` runs `stateless_http=True` **with `json_response=True`** — the default SSE response mode hung forever on a tool error under statelessness (see §7). Every future tool in this server inherits this config, don't change it without re-testing the error path
 2026-08-25 · [O2] · Raise `mcp.server.mcpserver.exceptions.ToolError` for anticipated tool failures, not a bare exception — a bare exception gets wrapped into a generic "Error executing tool X" and the real reason never reaches the model; `ToolError` preserves the message and skips the noisy traceback log
->>>>>>> d8b2aad (feat(tools): imports-mcp skeleton, parse_message end to end (T-012))
 2026-08-25 · [O2] · `/tools` is Python — stdlib `email` for RFC822 parsing, `lxml` for HTML (per the trap in §12), MCP server on the official Python MCP SDK's streamable-HTTP transport to match T-004's findings
 ```
 
