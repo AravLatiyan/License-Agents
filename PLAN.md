@@ -57,8 +57,8 @@ LAST UPDATED: 2026-08-25 11:53 · T-001 timeboxed out with zero shipped work, fo
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-013** | `harness/agent.json` — first saved agent: model + instructions + connectors | O1 | — | Detonation is now confirmed text-mode fallback (T-001 timed out unshipped) — build the agent config that everything else, including the fallback job, hangs off |
-| 2 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
+| 1 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
+| 2 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
 
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 11:53 · T-001 timeboxed out with zero shipped work, fo
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-013 | O1 | 2026-08-25 11:55 | 1.5h | Bare-minimum `agent.json` — model + instructions only, connectors stubbed. Move on rather than polish |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
