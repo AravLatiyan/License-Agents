@@ -57,8 +57,8 @@ LAST UPDATED: 2026-08-25 12:24 · T-017 done — WSL2 fix confirmed, T-002 unblo
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | Unblocked (T-017 done, WSL2 confirmed working). The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
-| 2 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
+| 1 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
+| 2 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
 
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 12:24 · T-017 done — WSL2 fix confirmed, T-002 unblo
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-002 | O1 | 2026-08-25 12:25 | 2h | Cockpit renders everything else (evidence lanes, detonation, verdict); the approval moment is filmed in TrueForge's own chat UI |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -281,8 +281,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
-- **T-014** [O1] Detonation sandbox job (or its text-mode fallback) returning structured JSON
-- **T-015** [O1] One approval gate wired end to end, action behind it may be a stub
 - **T-016** [O1+O2] `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json`
 
 ## Slice 2 — intelligence (Day 2)
