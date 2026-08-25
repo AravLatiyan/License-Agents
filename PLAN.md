@@ -59,8 +59,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 |---|---|---|---|---|---|
 | 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
-| 3 | **T-021** | `url_reputation` — URLhaus, as a third `imports-mcp` tool | O2 | | Auth-Key already confirmed live in T-003; same pattern as T-020 |
-| 4 | **T-022** | `correspondence_history` — IMAP search for prior contact | O2 | | Last O2 Slice-2 intel tool; needs an IMAP mailbox + app password first (trap #3: never the Gmail API) |
+| 3 | **T-022** | `correspondence_history` — IMAP search for prior contact | O2 | | Last O2 Slice-2 intel tool; needs an IMAP mailbox + app password first (trap #3: never the Gmail API) |
 
 ⏱ = has a timebox. See §3.
 
@@ -73,7 +72,7 @@ LAST UPDATED: 2026-08-26 09:18 · PR #1, #2, #3 merged (T-013/T-017/T-002/T-014+
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-021 | O2 | 2026-08-25 19:22 | 2h | Ship the exact-URL lookup only, skip any host-level lookup, log the gap in §7 |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
