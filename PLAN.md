@@ -28,14 +28,14 @@ Sections §1–§8 are living. Sections §9–§18 are the reference and change 
 # §1 LIVE STATUS
 
 ```
-PHASE:        DAY 0 — SPIKES + SCAFFOLD
-DATE:         2026-08-24
-DAYS LEFT:    6
-ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
-DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: All three spikes answered. Repo public. Qodo installed. First PRs open.
-BLOCKED ON:   Spike 1 (chromium in Daytona) — decides whether detonation is visual or text-mode
-LAST UPDATED: 2026-08-24 · scaffold created
+PHASE:        DAY 1 — SLICE 1 (ugly vertical slice)
+DATE:         2026-08-25
+DAYS LEFT:    5
+ACTIVE:       Owner 1 (Harness)
+DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
+TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
+BLOCKED ON:   PR #1 — Qodo re-review pending on 6fe4c6f (§5)
+LAST UPDATED: 2026-08-25 · pushed Qodo fixes to PR #1, waiting on re-review before next task
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -45,7 +45,7 @@ LAST UPDATED: 2026-08-24 · scaffold created
 - [ ] `main` protected: require a PR, require one review
 - [ ] Everyone **registered** for the hackathon (free, one form)
 - [ ] Everyone **starred `github.com/truefoundry/trueforge`** (free prize draw)
-- [ ] `node --version` ≥ 22 · `npx @truefoundry/trueforge` → `localhost:8790`
+- [x] `node --version` ≥ 22 · `npx @truefoundry/trueforge` → `localhost:8790` — **on Windows, run this from WSL2 with Node installed inside the distro, not native Windows (segfaults). See §7**
 - [ ] Model provider configured · **hard spend cap set on the API key**
 - [ ] Everyone has opened **at least one PR today**
 
@@ -57,8 +57,8 @@ LAST UPDATED: 2026-08-24 · scaffold created
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-001** | **SPIKE 1** — headless chromium in a Daytona sandbox returning a screenshot + redirect chain. **Measure the SECOND run, not just the first** | O1 | 3h ⏱ | **Highest-risk unknown in the project.** A 4-min install that passes in testing dies on camera — cold start is a demo problem, not a capability one |
-| 2 | **T-002** | **SPIKE 2** — does the **HTTP API** surface approval requests so our own cockpit can render Allow/Deny? *(The chat UI already does this natively — the open question is the API.)* | O1 | 2h ⏱ | The stock chat UI is what every other team will demo. Our cockpit is the four-iPad play, and it dies without this |
+| 1 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
+| 2 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
 
@@ -92,7 +92,9 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 > Append-only. Format: `YYYY-MM-DD · T-XXX · [Owner] · what shipped — result`
 
-_(nothing yet — first entry goes here)_
+2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
+2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
+2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
 
 ---
 
@@ -100,7 +102,7 @@ _(nothing yet — first entry goes here)_
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| _(nothing)_ | | | | |
+| PR #1 | O1 | Qodo re-review pending on `6fe4c6f` (fixed 2 Medium findings from first pass). **Do not merge, do not start new work on `harness/plan-sync-day1`** until it's clean | 2026-08-25 | Qodo posting the re-review — check PR #1 manually |
 
 ---
 
@@ -120,6 +122,8 @@ _(nothing yet — first entry goes here)_
 2026-08-24 · [all] · Approval gates are FOUR SEQUENTIAL per-tool-call gates, not one modal with four checkboxes — TrueForge's native approval is per tool call, boolean, and shows the JSON request. We configure it in agent.json, we do not build it. Four stopping moments is also more cinematic than one modal
 2026-08-24 · [all] · Sandbox lifecycle is TrueForge's job, not ours — we only write what runs inside it. Spike 1 must measure SECOND-RUN time, not just whether chromium installs: a 4-min install that works in testing dies on camera
 2026-08-24 · [all] · Qodo installed and left alone — it is half of judging criterion 04 which is scored on EVERY submission regardless of track. 10 min setup, zero ongoing. We are NOT chasing the Best Code Quality track itself; four iPads on Best UI beats one Mac Mini split four ways
+2026-08-25 · [O1] · Detonation defaults to TEXT-MODE FALLBACK (HTTP redirect chain, HTML parse, form-target extraction) — Spike 1 (chromium in Daytona) never produced committed work inside its 3h box, box expired ~9h unattended. Screenshot detonation is now a stretch goal only, revisited if Slice 1–3 land early
+2026-08-25 · [O1] · Cockpit (O3) builds against the HTTP/SSE API directly, never the chat UI — POST /sessions, POST /sessions/{id}/turns (stream:true → SSE), watch for `tool.approval_required` events, resume with a turn whose input is `{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny"}}`. Reconnects use GET /turns/{id}/subscribe?after_sequence_number=. Confirmed against the live server's own OpenAPI schema, not just docs (T-002)
 ```
 
 ---
@@ -130,7 +134,9 @@ _(nothing yet — first entry goes here)_
 
 | Date | Owner | What bit us | What to do instead |
 |---|---|---|---|
-| _(nothing yet)_ | | | |
+| 2026-08-25 | O1 | T-001 picked, timeboxed, session ended with no commit — nothing landed in git, no files, no findings. ~9h lost to Day 0 gate before anyone noticed the box had expired | Commit as you go, not just at task end. If a session might end mid-task, commit a WIP note to PLAN.md §3 at minimum so the next session can see real elapsed state, not just a stale timestamp |
+| 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. **Fixed — T-017 done, confirmed working** |
+| 2026-08-25 | O1 | Driving `wsl.exe` from this Bash tool (which is Git Bash/MSYS) silently mangled `/mnt/c/...` paths — MSYS rewrites leading `/` args before handing them to native exes, turning `/mnt/c/...` into `C:/Program Files/Git/mnt/c/...`. Also: separate `wsl -d Ubuntu -- bash -lc "..."` calls don't share state — WSL2 tears the instance down ~8s after the last process exits, killing anything backgrounded with plain `&`/`nohup` between calls | Prefix the command with `MSYS_NO_PATHCONV=1` to stop the path rewrite. Do the whole start-and-poll-and-verify sequence in **one** `wsl` invocation (one script), not several — that's also what actually needs `setsid ... </dev/null` to background cleanly within that one call |
 
 ---
 
@@ -140,7 +146,8 @@ _(nothing yet — first entry goes here)_
 
 | Date | Owner | Suggestion | Status |
 |---|---|---|---|
-| _(nothing yet)_ | | | |
+| 2026-08-25 | O1 | Plan assumed `harness/agent.json` is a file TrueForge itself reads. It isn't — agents are created via `POST /api/v1/agents` with a `manifest` body (model, instructions, mcp_servers incl. `require_approval_for_tools`, config). We're keeping `agent.json` as our repo-committed source of truth for that manifest and seeding it with a `curl` POST — matches the spirit of "configuration, not code" (§10) just via API instead of a config file TrueForge auto-loads | Adopted, see `harness/README.md` |
+| 2026-08-25 | O1 | Whoever's on Windows for real dev work should expect to run TrueForge from WSL2 (with Node installed inside the distro), not native Windows — it segfaults there. Worth a line in the top-level README's setup steps once written (T-065 checks this on clean clone) | Open |
 
 ---
 ---
@@ -276,8 +283,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
-- **T-014** [O1] Detonation sandbox job (or its text-mode fallback) returning structured JSON
-- **T-015** [O1] One approval gate wired end to end, action behind it may be a stub
 - **T-016** [O1+O2] `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json`
 
 ## Slice 2 — intelligence (Day 2)
