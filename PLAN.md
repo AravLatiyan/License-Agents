@@ -35,7 +35,7 @@ ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 16:00 · T-014 done — text-mode detonation working, self-tested
+LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-review fixes and 2 finding dismissals) done, PR #3 Qodo-clean (0 bugs, 0 rule violations), awaiting merge decision
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
