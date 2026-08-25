@@ -34,8 +34,8 @@ DAYS LEFT:    5
 ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
-BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 11:53 · T-001 timeboxed out with zero shipped work, forced to fallback
+BLOCKED ON:   T-002 — local TrueForge server crashes on Windows (§5, §7)
+LAST UPDATED: 2026-08-25 12:05 · T-013 done, Windows segfault found and logged
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 11:53 · T-001 timeboxed out with zero shipped work, fo
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-013 | O1 | 2026-08-25 11:55 | 1.5h | Bare-minimum `agent.json` — model + instructions only, connectors stubbed. Move on rather than polish |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -92,7 +92,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 > Append-only. Format: `YYYY-MM-DD · T-XXX · [Owner] · what shipped — result`
 
-_(nothing yet — first entry goes here)_
+2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
 
 ---
 
@@ -100,7 +100,7 @@ _(nothing yet — first entry goes here)_
 
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
-| _(nothing)_ | | | | |
+| T-002 | O1 | Local TrueForge server crashes on this Windows machine before it can be tested (see §7) | 2026-08-25 12:05 | Whoever fixes T-017 (Node-in-WSL), or run the spike from a teammate's Mac/Linux machine |
 
 ---
 
@@ -132,6 +132,7 @@ _(nothing yet — first entry goes here)_
 | Date | Owner | What bit us | What to do instead |
 |---|---|---|---|
 | 2026-08-25 | O1 | T-001 picked, timeboxed, session ended with no commit — nothing landed in git, no files, no findings. ~9h lost to Day 0 gate before anyone noticed the box had expired | Commit as you go, not just at task end. If a session might end mid-task, commit a WIP note to PLAN.md §3 at minimum so the next session can see real elapsed state, not just a stale timestamp |
+| 2026-08-25 | O1 | `npx @truefoundry/trueforge` **segfaults on native Windows**, reproduced twice, right after it logs `Local sandbox fallback is unavailable (win32 not supported)`. Running it from WSL2 without Node installed *inside* the Linux distro just falls through to the Windows node.exe via interop — same crash | Whoever is on Windows: install Node inside WSL2 Ubuntu itself (`curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo -E bash - && sudo apt-get install -y nodejs`, or nvm) and run TrueForge from there, not from Windows or from WSL-with-Windows-node. Filed as T-017 |
 
 ---
 
@@ -141,7 +142,8 @@ _(nothing yet — first entry goes here)_
 
 | Date | Owner | Suggestion | Status |
 |---|---|---|---|
-| _(nothing yet)_ | | | |
+| 2026-08-25 | O1 | Plan assumed `harness/agent.json` is a file TrueForge itself reads. It isn't — agents are created via `POST /api/v1/agents` with a `manifest` body (model, instructions, mcp_servers incl. `require_approval_for_tools`, config). We're keeping `agent.json` as our repo-committed source of truth for that manifest and seeding it with a `curl` POST — matches the spirit of "configuration, not code" (§10) just via API instead of a config file TrueForge auto-loads | Adopted, see `harness/README.md` |
+| 2026-08-25 | O1 | Whoever's on Windows for real dev work should expect to run TrueForge from WSL2 (with Node installed inside the distro), not native Windows — it segfaults there. Worth a line in the top-level README's setup steps once written (T-065 checks this on clean clone) | Open |
 
 ---
 ---
@@ -280,6 +282,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-014** [O1] Detonation sandbox job (or its text-mode fallback) returning structured JSON
 - **T-015** [O1] One approval gate wired end to end, action behind it may be a stub
 - **T-016** [O1+O2] `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json`
+- **T-017** [O1] Get TrueForge running on this Windows box — install Node inside WSL2 Ubuntu (not native Windows, it segfaults) and run from there; then runtime-verify `harness/agent.json` with a live `POST /api/v1/agents`. Unblocks T-002
 
 ## Slice 2 — intelligence (Day 2)
 - **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
