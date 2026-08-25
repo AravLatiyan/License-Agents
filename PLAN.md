@@ -35,7 +35,7 @@ ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 12:24 · T-017 done — WSL2 fix confirmed, T-002 unblocked
+LAST UPDATED: 2026-08-25 12:28 · T-002 answered YES — cockpit builds on the HTTP API directly
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 12:24 · T-017 done — WSL2 fix confirmed, T-002 unblo
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-002 | O1 | 2026-08-25 12:25 | 2h | Cockpit renders everything else (evidence lanes, detonation, verdict); the approval moment is filmed in TrueForge's own chat UI |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -94,6 +94,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 
 2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
 2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
+2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
 
 ---
 
@@ -122,6 +123,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-24 · [all] · Sandbox lifecycle is TrueForge's job, not ours — we only write what runs inside it. Spike 1 must measure SECOND-RUN time, not just whether chromium installs: a 4-min install that works in testing dies on camera
 2026-08-24 · [all] · Qodo installed and left alone — it is half of judging criterion 04 which is scored on EVERY submission regardless of track. 10 min setup, zero ongoing. We are NOT chasing the Best Code Quality track itself; four iPads on Best UI beats one Mac Mini split four ways
 2026-08-25 · [O1] · Detonation defaults to TEXT-MODE FALLBACK (HTTP redirect chain, HTML parse, form-target extraction) — Spike 1 (chromium in Daytona) never produced committed work inside its 3h box, box expired ~9h unattended. Screenshot detonation is now a stretch goal only, revisited if Slice 1–3 land early
+2026-08-25 · [O1] · Cockpit (O3) builds against the HTTP/SSE API directly, never the chat UI — POST /sessions, POST /sessions/{id}/turns (stream:true → SSE), watch for `tool.approval_required` events, resume with a turn whose input is `{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny"}}`. Reconnects use GET /turns/{id}/subscribe?after_sequence_number=. Confirmed against the live server's own OpenAPI schema, not just docs (T-002)
 ```
 
 ---
