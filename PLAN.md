@@ -35,7 +35,7 @@ ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 15:48 · PR #1 merged (59f8cac) — T-013, T-017, T-002 all shipped on main
+LAST UPDATED: 2026-08-25 16:00 · T-014 done — text-mode detonation working, self-tested
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -73,7 +73,7 @@ LAST UPDATED: 2026-08-25 15:48 · PR #1 merged (59f8cac) — T-013, T-017, T-002
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| T-014 | O1 | 2026-08-25 15:57 | 1h | Ship redirect-chain-only JSON (skip form analysis), log the gap, move on |
+| _(none yet)_ | | | | |
 
 ### Timebox rules — Claude enforces these, not you
 | Task | Box | Fallback |
@@ -95,6 +95,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
 2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
 2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
+2026-08-25 · T-014 · [O1] · `harness/detonate.js` — text-mode detonation: follows redirects (manual, capped at 10 hops, non-http(s) schemes refused), parses final HTML with `node-html-parser` (never regex, per §12), flags forms that ask for a password and post cross-domain. Self-tested against a local-only fixture server (`harness/detonate.test.js`, `node --test`, 3/3 pass) — never touched a real domain (§13). `harness/package.json` added (one dependency: `node-html-parser`); root `.gitignore` added (`node_modules/` wasn't excluded before) — result: returns `{url, redirect_chain, final_url, forms, summary}`, matches §10's `detonate(url)` shape minus the screenshot field
 
 ---
 
