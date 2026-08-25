@@ -1,0 +1,11 @@
+{
+  "name": "harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "node-html-parser": "^6.1.13"
+  }
+}

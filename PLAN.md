@@ -35,7 +35,7 @@ ACTIVE:       Owner 1 (Harness)
 DORMANT:      Owner 2 (Tools) · Owner 3 (Cockpit) · Owner 4 (Mission)
 TODAY'S GOAL: Slice 1 running end to end, ugly. 40-second recording of it.
 BLOCKED ON:   nothing
-LAST UPDATED: 2026-08-25 15:48 · PR #1 merged (59f8cac) — T-013, T-017, T-002 all shipped on main
+LAST UPDATED: 2026-08-25 17:28 · PR #1 and PR #2 merged; T-014 (incl. Qodo-review fixes and 2 finding dismissals) done, PR #3 Qodo-clean (0 bugs, 0 rule violations), awaiting merge decision
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -57,8 +57,8 @@ LAST UPDATED: 2026-08-25 15:48 · PR #1 merged (59f8cac) — T-013, T-017, T-002
 
 | # | ID | Task | Owner | Size | Why now |
 |---|---|---|---|---|---|
-| 1 | **T-014** | Detonation sandbox job (text-mode fallback) returning structured JSON | O1 | — | Follows straight from T-013's agent config; text-mode confirmed as the path (§6, 2026-08-25) |
-| 2 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
+| 1 | **T-015** | One approval gate wired end to end, action behind it may be a stub | O1 | — | Natural next step once T-002 answers how the gate surfaces over the API |
+| 2 | **T-016** | `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json` | O1+O2 | — | Contracts unblock O3/O4 the moment they join |
 | 3 | **T-003** | **SPIKE 3** — URLhaus Auth-Key from `auth.abuse.ch`; RDAP returns registration date + abuse contact; crt.sh returns cert age | O2 | 2h ⏱ | Cheap, and confirms three of our four evidence sources exist |
 | 4 | **T-004** | Read the cookbook `bring-your-own-mcp` example end to end **before writing any MCP code** | O2 | 1h | One hour here saves four hours of transport debugging — the single most common way to lose an afternoon on this project |
 
@@ -95,6 +95,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-25 · T-013 · [O1] · `harness/agent.json` + `harness/README.md` — manifest for `POST /api/v1/agents` (model, instructions, sandbox+dynamic-subagents config), schema verified against trueforge.dev docs. `mcp_servers` left empty, `imports-mcp` not built yet (T-012) — result: written, not yet runtime-verified against a live server (see §7, Windows segfault)
 2026-08-25 · T-017 · [O1] · Node installed inside WSL2 Ubuntu (NodeSource 22.x); TrueForge runs clean from there, no segfault, `curl` got HTTP 200 — result: `harness/agent.json` POSTed to the live `/api/v1/agents`, schema fully accepted, only rejection was the documented 422 "model provider not configured" (expected on a fresh instance, separate checklist item). T-013 now counts as runtime-verified. T-002 unblocked
 2026-08-25 · T-002 · [O1] · **SPIKE 2 answered: YES, the HTTP API fully surfaces approvals — no chat UI needed.** Confirmed straight from the live server's own OpenAPI schema (not just docs): `POST /sessions/{id}/turns` streams SSE `TurnStreamingEvent`s; a gated tool call emits `tool.approval_required` (`type, id, created_at, thread_id, tool_calls[]`). Cockpit resumes by posting a turn with `input: [{type:"user.tool_approval", thread_id, tool_call_id, approval:{status:"allow"|"deny", reason?}}]`. `/turns/{id}/subscribe?after_sequence_number=` gives resumable SSE for free (reconnect handling, §10). Full details in §6 — result: cockpit's core interaction is fully buildable, T-036 unblocked
+2026-08-25 · T-014 · [O1] · `harness/detonate.js` — text-mode detonation: follows redirects (manual, capped at 10 hops, non-http(s) schemes refused), parses final HTML with `node-html-parser` (never regex, per §12), flags forms that ask for a password and post cross-domain. Self-tested against a local-only fixture server (`harness/detonate.test.js`, `node --test`, 3/3 pass) — never touched a real domain (§13). `harness/package.json` added (one dependency: `node-html-parser`); root `.gitignore` added (`node_modules/` wasn't excluded before) — result: returns `{url, redirect_chain, final_url, forms, summary}`, matches §10's `detonate(url)` shape minus the screenshot field
+2026-08-25 · T-014 (Qodo pass) · [O1] · Fixed 5 real bugs Qodo's PR #3 review found: fetch/DNS/timeout/malformed-redirect failures now return `{url, redirect_chain, error}` instead of throwing; one malformed form `action` no longer aborts analysis of the rest of the page (represented with `action_invalid: true` instead); HTML content-type check is case-insensitive; response body is read with a hard byte cap (`readBodyWithLimit`, streamed, never fully buffered) before parsing; non-HTML success responses now return the full documented shape including `summary`. 10/10 tests pass (7 new regression tests added). Declined one finding — see §8
 
 ---
 
@@ -148,6 +150,8 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | Date | Owner | Suggestion | Status |
 |---|---|---|---|
 | 2026-08-25 | O1 | Plan assumed `harness/agent.json` is a file TrueForge itself reads. It isn't — agents are created via `POST /api/v1/agents` with a `manifest` body (model, instructions, mcp_servers incl. `require_approval_for_tools`, config). We're keeping `agent.json` as our repo-committed source of truth for that manifest and seeding it with a `curl` POST — matches the spirit of "configuration, not code" (§10) just via API instead of a config file TrueForge auto-loads | Adopted, see `harness/README.md` |
+| 2026-08-25 | O1 | Qodo's PR #3 review flagged `detonate.test.js`'s fixture server for using `127.0.0.1` as a rule violation, citing the "Daytona can't reach localhost" trap. **Declined, on reconsideration with fuller evidence.** The only documented rule (CLAUDE.md #9, PLAN.md §12, both verbatim-checked) says the *production fake portal* must live inside Daytona because a remote sandbox can't dial back to a laptop — a network-reachability fact about one specific target, not a blanket ban on localhost. Neither file mentions test fixtures. Implementing Qodo's literal remediation (host the test fixture inside a live Daytona sandbox) would need Daytona credentials we don't have, spin a sandbox per test run (directly violating CLAUDE.md trap #4: "never spin a fresh sandbox per detonation"), and break a judge's clean-clone test run (rule 5, T-065) — trading one claimed violation for three real ones. **What Qodo did get right, and what we missed the first pass:** §10's architecture diagram draws detonation (redirect chain, form targets — exactly what `detonate.js` does) as running *inside* Daytona in the intended production pipeline, and T-014's own backlog line calls the text-mode fallback "still genuine sandboxed work." So production `detonate.js` genuinely is meant to eventually execute inside a Daytona sandbox — that wiring doesn't exist yet (T-035, scope clarified below). That's a real, separate gap from this test-fixture question, out of T-014's scope/timebox as built. Replied on the Qodo thread with this full reasoning | Declined, reasoning posted on PR #3's review thread; T-035 scope clarified |
+| 2026-08-25 | O1 | **The exact conflict on finding #3 (Qodo Rule 2880752), stated precisely.** Rule 2880752 ("Disallow running the detonation fake portal on localhost," `app.qodo.ai/rules/2880752`) is a *standing, account-level Qodo Compliance Rule* — not a per-review inference. It reads: "detonation-related fixtures are required to run at a Daytona sandbox endpoint," with no carve-out for test-only fixtures. This is broader than its source text (CLAUDE.md #9 / PLAN.md §12), which names one specific case: the *production* fake portal must be reachable *by a real, remote Daytona sandbox*, because Daytona can't dial back to a laptop. `detonate.test.js`'s fixture triggers neither the wording's condition nor its reason — the code under test (`detonate.js`) has no Daytona integration (§11 T-035, unbuilt) and isn't invoked from inside any sandbox in this test; both the fetcher and the fixture run in the same local Node process, so there is no remote-sandbox-to-laptop gap to cross. The conflict is therefore rule-scope vs. architecture, not evidence vs. architecture: satisfying the rule as written would mean building Daytona orchestration as a prerequisite for a task explicitly scoped as the fallback *because* that spike didn't land, and would itself break CLAUDE.md trap #4 and rule 5/T-065 (§8, row above). Rule stays as configured — no repo-level Qodo config exists to change (checked: no `.qodo*`/`pr_agent*` file in the repo; the rule lives entirely on the Qodo dashboard) — and no change was made to it. Declined via a `@qodo dismiss` reply on the finding's thread instead, since that records the decision on the PR without touching rule configuration | Declined; dismissal requested on PR #3, rule config untouched (needs explicit approval to change) |
 | 2026-08-25 | O1 | Whoever's on Windows for real dev work should expect to run TrueForge from WSL2 (with Node installed inside the distro), not native Windows — it segfaults there. Worth a line in the top-level README's setup steps once written (T-065 checks this on clean clone) | Open |
 
 ---
@@ -284,7 +288,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-011** [O2] 3 quick `.eml` fixtures to unblock the normaliser — credential phish, invoice fraud, one legitimate. **With hand-written `Authentication-Results` headers**
 - **T-012** [O2] `imports-mcp` skeleton with `parse_message` working end to end
 - **T-013** [O1] `harness/agent.json` — first saved agent: model + instructions + connectors
-- **T-016** [O1+O2] `contracts/events.ts` + `contracts/fixtures/mission-happy-path.json`
 
 ## Slice 2 — intelligence (Day 2)
 - **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
@@ -301,7 +304,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-032** [O2] `create_block_rule`
 - **T-033** [O2] `file_abuse_report` to the RDAP abuse contact
 - **T-034** [O1] All four actions marked as approval-required in `agent.json` — **four sequential gates**, each showing what it will do. Configuration, not code
-- **T-035** [O1] Warm-sandbox or snapshot strategy — cold start is 2–5 min and kills the demo
+- **T-035** [O1] Warm-sandbox or snapshot strategy, **and** actually wire `detonate.js` (or its successor) to execute inside the Daytona sandbox job — cold start is 2–5 min and kills the demo. Currently `detonate.js` has zero Daytona integration; it's a plain Node module (§8, 2026-08-25)
 - **T-036** [O3] LICENCE REQUIRED panel — renders TrueForge's approval request in our styling, Allow/Deny per gate. **Depends on T-002.** Four gates fire in sequence, not one modal
 
 ## Slice 4 — depth (Day 4)
