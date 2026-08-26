@@ -1,5 +1,5 @@
 lxml>=5.0
-mcp>=1.0
+mcp>=2.0
 requests>=2.31
 truststore>=0.9
 pytest>=8.0
