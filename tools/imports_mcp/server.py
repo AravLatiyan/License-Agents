@@ -1,10 +1,12 @@
-"""imports-mcp — Slice 1 skeleton (T-012).
+"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020).
 
-Streamable HTTP, stateless per request, one tool: parse_message. This is the
-Python-SDK equivalent of the bring-your-own-mcp cookbook example (T-004):
-same transport, same "register in TrueForge Settings, reference by name in
-agent.json" pattern, no live IMAP mailbox wired up yet — Slice 1 reads a
-hardcoded fixture instead (per PLAN.md §14: "hardcoded fixture -> parse").
+Streamable HTTP, stateless per request. This is the Python-SDK equivalent of
+the bring-your-own-mcp cookbook example (T-004): same transport, same
+"register in TrueForge Settings, reference by name in agent.json" pattern.
+
+Tools:
+  parse_message  - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
+  domain_intel   - RDAP registration/abuse + crt.sh cert age (Slice 2)
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.normaliser import parse_message as _parse_message
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
@@ -144,6 +147,20 @@ def parse_message(fixture: str) -> dict[str, Any]:
     with open(path, "rb") as f:
         result = _parse_message(f.read())
     return _cap_response(result)
+
+
+@mcp.tool()
+def domain_intel(domain: str) -> dict[str, Any]:
+    """RDAP registration/abuse data + crt.sh cert age for a domain.
+
+    Each source degrades independently to available=False with an
+    explanatory note instead of raising - a down source is evidence
+    ("not published", "crt.sh unreachable"), not a tool failure.
+    """
+    domain = domain.strip()
+    if not domain:
+        raise ToolError("domain must not be empty")
+    return _domain_intel(domain)
 
 
 if __name__ == "__main__":
