@@ -19,6 +19,27 @@ from typing import Any
 from lxml import html as lxml_html
 
 _BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_TRAILING_SENTENCE_PUNCT = ".,;:!?'\""
+
+
+def _strip_trailing_punctuation(url: str) -> str:
+    """Drop sentence punctuation a bare-URL regex match picks up, without
+    mangling a URL that legitimately ends in a closing paren (e.g. a
+    Wikipedia article path). A trailing ")" is ambiguous - it either closes
+    a paren that's part of the URL or one from the surrounding sentence
+    ("(see http://example.com)") - so only the excess (unmatched) closing
+    parens get stripped; a balanced trailing ")" is left alone.
+    """
+    excess_close_parens = url.count(")") - url.count("(")
+    while url:
+        if url[-1] in _TRAILING_SENTENCE_PUNCT:
+            url = url[:-1]
+        elif url[-1] == ")" and excess_close_parens > 0:
+            url = url[:-1]
+            excess_close_parens -= 1
+        else:
+            break
+    return url
 
 
 def _decode_text(part: EmailMessage) -> str:
@@ -44,7 +65,10 @@ def _urls_from_html(text: str) -> list[dict[str, str]]:
         return urls
     for anchor in tree.iter("a"):
         href = anchor.get("href")
-        if not href:
+        # Only absolute http(s) links are useful to url_reputation - mailto:,
+        # javascript:, bare fragments, and relative paths (we have no base
+        # URL to resolve them against) all get dropped here, not downstream.
+        if not href or not href.lower().startswith(("http://", "https://")):
             continue
         anchor_text = (anchor.text_content() or "").strip()
         urls.append({"href": href, "anchor_text": anchor_text})
@@ -52,18 +76,43 @@ def _urls_from_html(text: str) -> list[dict[str, str]]:
 
 
 def _urls_from_plain_text(text: str) -> list[dict[str, str]]:
-    return [{"href": m.group(0), "anchor_text": ""} for m in _BARE_URL_RE.finditer(text)]
+    return [
+        {"href": _strip_trailing_punctuation(m.group(0)), "anchor_text": ""}
+        for m in _BARE_URL_RE.finditer(text)
+    ]
+
+
+def _dedupe_urls(urls: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep first occurrence per href. HTML is extracted before plain text,
+    so when the same link appears in both multipart alternatives, the
+    HTML version (with real anchor text) wins over the bare-URL match."""
+    seen: set[str] = set()
+    deduped = []
+    for url in urls:
+        if url["href"] in seen:
+            continue
+        seen.add(url["href"])
+        deduped.append(url)
+    return deduped
 
 
 def _extract_urls(msg: EmailMessage) -> list[dict[str, str]]:
+    """Every URL from every body alternative, not just the first one found.
+
+    multipart/alternative parts aren't guaranteed to carry the same links -
+    a phishing message can put one URL in the HTML version a client renders
+    and a different one in the plain-text fallback. Extracting from HTML
+    alone (or stopping if HTML parsing fails) would silently miss those.
+    """
     html_part = msg.get_body(preferencelist=("html",))
     plain_part = msg.get_body(preferencelist=("plain",))
 
+    urls: list[dict[str, str]] = []
     if html_part is not None:
-        return _urls_from_html(_decode_text(html_part))
+        urls.extend(_urls_from_html(_decode_text(html_part)))
     if plain_part is not None:
-        return _urls_from_plain_text(_decode_text(plain_part))
-    return []
+        urls.extend(_urls_from_plain_text(_decode_text(plain_part)))
+    return _dedupe_urls(urls)
 
 
 def _extract_attachments(msg: EmailMessage) -> list[dict[str, Any]]:
