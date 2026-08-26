@@ -35,6 +35,40 @@ add an entry here:
 Those four names are the **four sequential licence gates** (§10, §17) — everything else on the
 MCP server stays ungated.
 
+## detonate.js
+
+Text-mode detonation (§14 Slice 1, T-014): follows redirects (capped at 10 hops, refuses
+non-http(s) schemes), parses the final HTML with `node-html-parser` (never regex), flags forms
+that ask for a password and post to a different origin. `node --test` runs the self-tests
+against a local-only fixture server — never a real domain.
+
+**SSRF guard:** the initial URL and every redirect hop are resolved and refused if they land on
+loopback, RFC1918, link-local (incl. cloud-metadata `169.254.169.254`), or unspecified addresses
+— checked against the *resolved* IP, not just the hostname string, so a domain that resolves to
+an internal address is also caught. `allowPrivateNetworkTargets: true` opts back in and exists
+only for `detonate.test.js`'s own local fixture server; never set it for a real detonation.
+
+## stub-mcp-server.js — throwaway, not the product
+
+One-tool (`quarantine_stub`) MCP server used only to prove the approval-gate wiring end to end
+(T-015) before `tools/imports-mcp` (T-012, owner O2) exists. Exposed over Streamable HTTP
+because TrueForge only connects to `type: "remote"` (URL-based) MCP servers — no local/stdio
+type in this version. Never reference it from `harness/agent.json`; that file stays pointed at
+the real `imports-mcp` server once T-012 lands. The tool response caps `message_id` so the
+serialized reply stays under the ~2KB MCP response limit, flagging `truncated: true` if the
+caller-supplied id had to be cut — see `stub-mcp-server.test.js`.
+
+**Reproducing the approval-gate proof:** `harness/test/approval-gate-verification/` has a
+committed throwaway test-agent payload and script that replay the exact registration →
+discovery → gated-agent-creation steps from a clean checkout, plus exact cleanup instructions.
+See that directory's README. `harness/agent.json` is never touched by it.
+
+**If running this (or anything under `harness/`) from WSL2:** don't run it against `/mnt/c`
+directly — this repo is OneDrive-synced, and WSL's cross-filesystem access to it stalls badly on
+anything touching `node_modules` (a plain `import()` hung 8+ seconds with zero output). Copy the
+directory to WSL's native filesystem first and run from there. TrueForge itself is unaffected —
+its `npx` cache lives in the WSL user profile, not `/mnt/c`.
+
 ## Known issue: TrueForge segfaults on native Windows — fixed, run it under WSL2
 
 `npx @truefoundry/trueforge` crashes (`Segmentation fault`) a moment after start on native

@@ -1,0 +1,20 @@
+{
+  "name": "t015-approval-gate-verify",
+  "manifest": {
+    "model": {
+      "name": "anthropic/claude-sonnet-5",
+      "params": { "temperature": 0.2, "max_tokens": 4096 }
+    },
+    "instructions": "Throwaway agent for T-015 approval-gate verification only. Never used for a real turn — delete after the gate wiring is confirmed. See harness/test/approval-gate-verification/README.md.",
+    "mcp_servers": [
+      {
+        "name": "__MCP_NAME__",
+        "require_approval_for_tools": ["quarantine_stub"]
+      }
+    ],
+    "config": {
+      "sandbox": { "enabled": false },
+      "iteration_limit": 5
+    }
+  }
+}
