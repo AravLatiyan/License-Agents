@@ -3,3 +3,6 @@ node_modules/
 .env.*
 !.env.example
 *.log
+tools/.venv/
+__pycache__/
+*.pyc
