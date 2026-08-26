@@ -6,6 +6,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "node-html-parser": "^6.1.13"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "node-html-parser": "^6.1.13",
+    "zod": "^3.24.0"
   }
 }

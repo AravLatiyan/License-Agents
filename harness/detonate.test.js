@@ -12,6 +12,12 @@ import { detonate } from "./detonate.js";
 // test detonate.js's own redirect/HTML-parsing logic in isolation — nothing
 // here runs in, or is reached by, a sandbox. T-014 has no Daytona
 // integration yet (that's separate future work, §11 T-035).
+//
+// detonate() refuses loopback/private/link-local targets by default (SSRF
+// guard, Rule 2880752) — every call below against this fixture passes
+// `allowPrivateNetworkTargets: true` to opt back in explicitly, so the
+// default-refusal behavior stays real and is exercised by the test right
+// after this comment, not silently bypassed for every test in this file.
 function startFixtureServer() {
   const server = http.createServer((req, res) => {
     if (req.url === "/start") {
@@ -78,11 +84,23 @@ function startFixtureServer() {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 
-test("follows redirect chain and flags cross-domain password form", async () => {
+test("refuses loopback/private targets by default (SSRF guard)", async () => {
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
     const result = await detonate(`http://127.0.0.1:${port}/start`);
+    assert.match(result.error, /refused private\/internal network target/);
+    assert.deepEqual(result.redirect_chain, []);
+  } finally {
+    server.close();
+  }
+});
+
+test("follows redirect chain and flags cross-domain password form", async () => {
+  const server = await startFixtureServer();
+  const { port } = server.address();
+  try {
+    const result = await detonate(`http://127.0.0.1:${port}/start`, { allowPrivateNetworkTargets: true });
     assert.equal(result.redirect_chain.length, 2);
     assert.equal(result.redirect_chain[0].status, 302);
     assert.equal(result.redirect_chain[1].status, 200);
@@ -99,7 +117,7 @@ test("non-HTML response returns the full documented shape, including summary", a
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/plain`);
+    const result = await detonate(`http://127.0.0.1:${port}/plain`, { allowPrivateNetworkTargets: true });
     assert.deepEqual(result.forms, []);
     assert.equal(typeof result.summary, "string");
     assert.match(result.summary, /not HTML/);
@@ -128,7 +146,7 @@ test("connection failure (nothing listening) returns a structured error, not a t
   const { port } = server.address();
   await new Promise((resolve) => server.close(resolve));
 
-  const result = await detonate(`http://127.0.0.1:${port}/start`);
+  const result = await detonate(`http://127.0.0.1:${port}/start`, { allowPrivateNetworkTargets: true });
   assert.equal(typeof result, "object");
   assert.ok(result.error, "expected a structured error, got: " + JSON.stringify(result));
   assert.deepEqual(result.redirect_chain, []);
@@ -138,7 +156,7 @@ test("timeout returns a structured error, not a throw", async () => {
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/slow`, { timeoutMs: 50 });
+    const result = await detonate(`http://127.0.0.1:${port}/slow`, { timeoutMs: 50, allowPrivateNetworkTargets: true });
     assert.ok(result.error, "expected a structured error, got: " + JSON.stringify(result));
   } finally {
     server.close();
@@ -149,7 +167,7 @@ test("malformed redirect Location returns a structured error, not a throw", asyn
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/bad-redirect`);
+    const result = await detonate(`http://127.0.0.1:${port}/bad-redirect`, { allowPrivateNetworkTargets: true });
     assert.ok(result.error, "expected a structured error, got: " + JSON.stringify(result));
     assert.equal(result.redirect_chain.length, 1);
   } finally {
@@ -161,7 +179,7 @@ test("one malformed form action doesn't abort analysis of the others", async () 
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/malformed-form`);
+    const result = await detonate(`http://127.0.0.1:${port}/malformed-form`, { allowPrivateNetworkTargets: true });
     assert.equal(result.forms.length, 2);
     assert.equal(result.forms[0].action_invalid, true);
     assert.equal(result.forms[1].asks_password, true);
@@ -175,7 +193,7 @@ test("HTML content-type check is case-insensitive", async () => {
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/uppercase-html`);
+    const result = await detonate(`http://127.0.0.1:${port}/uppercase-html`, { allowPrivateNetworkTargets: true });
     assert.equal(result.forms.length, 1);
     assert.equal(result.forms[0].asks_password, true);
   } finally {
@@ -187,7 +205,7 @@ test("oversized response body is rejected before parsing, not buffered unbounded
   const server = await startFixtureServer();
   const { port } = server.address();
   try {
-    const result = await detonate(`http://127.0.0.1:${port}/big`, { maxBodyBytes: 100 });
+    const result = await detonate(`http://127.0.0.1:${port}/big`, { maxBodyBytes: 100, allowPrivateNetworkTargets: true });
     assert.match(result.error, /byte limit/);
   } finally {
     server.close();

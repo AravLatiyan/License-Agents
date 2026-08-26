@@ -1,4 +1,6 @@
 import { parse as parseHtml } from "node-html-parser";
+import dns from "node:dns/promises";
+import net from "node:net";
 
 const MAX_REDIRECT_HOPS = 10;
 const REQUEST_TIMEOUT_MS = 5000;
@@ -14,8 +16,18 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024; // bound attacker-controlled response si
  * redirect location, oversized body) returns the same {url, redirect_chain,
  * error} shape instead of throwing — the target is untrusted and frequently
  * unreachable, and a dead phishing URL is a routine result, not a crash.
+ *
+ * SSRF guard (Rule 2880752): the initial URL and every redirect hop are
+ * refused if they resolve to a loopback/RFC1918/link-local/cloud-metadata
+ * address, so an attacker-controlled page can't use this fetcher to probe
+ * internal services. `allowPrivateNetworkTargets` exists only for the local
+ * unit-test fixture (detonate.test.js) to opt back in explicitly — never set
+ * it for a real detonation.
  */
-export async function detonate(startUrl, { timeoutMs = REQUEST_TIMEOUT_MS, maxBodyBytes = MAX_BODY_BYTES } = {}) {
+export async function detonate(
+  startUrl,
+  { timeoutMs = REQUEST_TIMEOUT_MS, maxBodyBytes = MAX_BODY_BYTES, allowPrivateNetworkTargets = false } = {}
+) {
   const redirectChain = [];
   let currentUrl = startUrl;
 
@@ -36,6 +48,17 @@ export async function detonate(startUrl, { timeoutMs = REQUEST_TIMEOUT_MS, maxBo
           redirect_chain: redirectChain,
           error: `refused non-http(s) scheme: ${parsed.protocol}`,
         };
+      }
+
+      if (!allowPrivateNetworkTargets) {
+        const privateTarget = await resolvesToPrivateNetwork(parsed.hostname);
+        if (privateTarget) {
+          return {
+            url: startUrl,
+            redirect_chain: redirectChain,
+            error: `refused private/internal network target: ${parsed.hostname} resolves to ${privateTarget}`,
+          };
+        }
       }
 
       const response = await fetch(currentUrl, {
@@ -90,6 +113,44 @@ export async function detonate(startUrl, { timeoutMs = REQUEST_TIMEOUT_MS, maxBo
   } catch (err) {
     return { url: startUrl, redirect_chain: redirectChain, error: describeError(err) };
   }
+}
+
+// IPv4 ranges that must never be reachable from this fetcher: loopback,
+// RFC1918 private space, link-local (which is also where cloud metadata
+// endpoints like 169.254.169.254 live), and the unspecified/"this network" block.
+const PRIVATE_IPV4_RANGES = [
+  /^127\./,
+  /^10\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\./,
+];
+
+function isPrivateIPv4(address) {
+  return PRIVATE_IPV4_RANGES.some((range) => range.test(address));
+}
+
+function isPrivateIPv6(address) {
+  const lower = address.toLowerCase();
+  return lower === "::1" || lower === "::" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80");
+}
+
+// Checks the *resolved* address, not just the hostname string, so a domain
+// name that resolves to an internal IP (DNS rebinding) is caught too, not
+// only literal http://127.0.0.1 style URLs.
+async function resolvesToPrivateNetwork(hostname) {
+  const literalFamily = net.isIP(hostname);
+  const addresses = literalFamily
+    ? [{ address: hostname, family: literalFamily }]
+    : await dns.lookup(hostname, { all: true });
+
+  for (const { address, family } of addresses) {
+    if (family === 6 ? isPrivateIPv6(address) : isPrivateIPv4(address)) {
+      return address;
+    }
+  }
+  return null;
 }
 
 function describeError(err) {
