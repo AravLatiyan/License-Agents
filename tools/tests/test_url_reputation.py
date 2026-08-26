@@ -8,11 +8,12 @@ or network access.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock, patch
 
 import requests
 
-from imports_mcp.url_reputation import NOT_LISTED_NOTE, url_reputation
+from imports_mcp.url_reputation import MAX_RESPONSE_BYTES, NOT_LISTED_NOTE, url_reputation
 
 LISTED_RESPONSE = {
     "query_status": "ok",
@@ -125,3 +126,54 @@ def test_unexpected_query_status_is_unavailable_not_a_crash(mock_post):
 
     assert result["available"] is False
     assert "invalid_url" in result["note"]
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_null_json_response_is_unavailable_not_a_crash(mock_post):
+    # Valid JSON (a 200 + json.loads succeeds) but not a JSON *object* -
+    # data.get(...) would raise AttributeError on this without a guard.
+    mock_post.return_value = _mock_response(200, None)
+
+    result = url_reputation("https://example.com/")
+
+    assert result["available"] is False
+    assert "not a JSON object" in result["note"]
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_list_json_response_is_unavailable_not_a_crash(mock_post):
+    mock_post.return_value = _mock_response(200, ["unexpected", "array"])
+
+    result = url_reputation("https://example.com/")
+
+    assert result["available"] is False
+    assert "not a JSON object" in result["note"]
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_small_result_is_not_marked_truncated(mock_post):
+    mock_post.return_value = _mock_response(200, LISTED_RESPONSE)
+
+    result = url_reputation("http://223.151.72.214:44130/i")
+
+    assert result["truncated"] is False
+    assert "omitted" not in result
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_oversized_tags_are_truncated_under_the_2kb_cap(mock_post):
+    huge_response = {
+        **LISTED_RESPONSE,
+        "tags": [f"tag-{i}-{'x' * 40}" for i in range(200)],
+    }
+    mock_post.return_value = _mock_response(200, huge_response)
+
+    result = url_reputation("http://223.151.72.214:44130/i")
+
+    assert result["truncated"] is True
+    assert result["omitted"]["tags"] > 0
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= MAX_RESPONSE_BYTES
