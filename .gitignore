@@ -6,3 +6,4 @@ node_modules/
 tools/.venv/
 __pycache__/
 *.pyc
+.pytest_cache/
