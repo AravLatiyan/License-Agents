@@ -288,19 +288,21 @@ def test_rdap_non_iterable_events_degrades_without_raising(mock_get):
 
 
 @patch("imports_mcp.domain_intel.requests.get")
-def test_rdap_non_list_events_value_is_harmlessly_ignored(mock_get):
-    # A string IS iterable (iterates to characters), so this doesn't hit the
-    # except boundary - it just finds no dict-shaped event, same as an
-    # empty list would. Documenting this so the boundary isn't "fixed" to
-    # reject it and its behavior silently drifts later.
+def test_rdap_non_list_events_value_degrades_instead_of_marked_available(mock_get):
+    # A string IS iterable (iterates to characters), so without an explicit
+    # isinstance(events, list) check this used to sail past the isinstance
+    # dict filter, find no dict-shaped event, and come back available=True
+    # with "not published" - reporting a malformed response as a domain with
+    # no registration event on file. events is now strictly required to be
+    # a list, so this is caught before any iteration happens.
     malformed = {"events": "not-a-list", "entities": []}
     mock_get.side_effect = [_mock_response(200, malformed), _mock_response(200, CRTSH_SUCCESS)]
 
     result = domain_intel("example.com")
 
-    assert result["rdap"]["available"] is True
-    assert result["rdap"]["registration_date"] is None
-    assert result["cert"]["available"] is True
+    assert result["rdap"]["available"] is False
+    assert "events" in result["rdap"]["note"]
+    assert result["cert"]["available"] is True  # crt.sh still ran independently
 
 
 @patch("imports_mcp.domain_intel.requests.get")
@@ -335,3 +337,34 @@ def test_crtsh_non_dict_entries_are_skipped_not_raised(mock_get):
 
     assert result["cert"]["available"] is True
     assert result["cert"]["age_days"] is not None
+
+
+# --- JSON decode failures: each source's own decode error, independently ---
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_rdap_json_decode_failure_degrades_and_crtsh_still_returns(mock_get):
+    mock_get.side_effect = [
+        _mock_response(200, raise_for_json=True),
+        _mock_response(200, CRTSH_SUCCESS),
+    ]
+
+    result = domain_intel("example.com")
+
+    assert result["rdap"]["available"] is False
+    assert result["rdap"]["note"] == "RDAP response was not valid JSON"
+    assert result["cert"]["available"] is True  # crt.sh still ran independently
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_crtsh_json_decode_failure_degrades_and_rdap_still_returns(mock_get):
+    mock_get.side_effect = [
+        _mock_response(200, RDAP_SUCCESS),
+        _mock_response(200, raise_for_json=True),
+    ]
+
+    result = domain_intel("example.com")
+
+    assert result["cert"]["available"] is False
+    assert result["cert"]["note"] == "crt.sh response was not valid JSON"
+    assert result["rdap"]["available"] is True  # RDAP still returned independently
