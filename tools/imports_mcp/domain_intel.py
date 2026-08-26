@@ -20,6 +20,7 @@ OS store instead, which is the real fix — not disabling verification.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -32,18 +33,22 @@ truststore.inject_into_ssl()
 RDAP_TIMEOUT_SECONDS = 10
 CRTSH_TIMEOUT_SECONDS = 5
 CRTSH_CACHE_TTL_SECONDS = 3600
+MAX_RESPONSE_BYTES = 2048
+_MAX_FIELD_CHARS = 200
 
 # In-memory only — good enough for one Slice-2 mission run. T-045 upgrades
 # this to SQLite so it survives a restart; don't duplicate that here.
-_crtsh_cache: dict[str, dict[str, Any]] = {}
+# Value is (cached_at_epoch_seconds, result) so CRTSH_CACHE_TTL_SECONDS is
+# actually enforced instead of caching forever.
+_crtsh_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _vcard_field(entity: dict[str, Any], field: str) -> str | None:
     vcard = entity.get("vcardArray")
-    if not vcard or len(vcard) < 2:
+    if not isinstance(vcard, list) or len(vcard) < 2 or not isinstance(vcard[1], list):
         return None
     for item in vcard[1]:
-        if item and item[0] == field and len(item) > 3 and item[3]:
+        if isinstance(item, (list, tuple)) and len(item) > 3 and item[0] == field and item[3]:
             return item[3]
     return None
 
@@ -66,22 +71,38 @@ def _rdap_lookup(domain: str) -> dict[str, Any]:
     except ValueError:
         return {**empty, "note": "RDAP response was not valid JSON"}
 
-    registration_date = next(
-        (e.get("eventDate") for e in data.get("events", []) if e.get("eventAction") == "registration"),
-        None,
-    )
+    if not isinstance(data, dict):
+        return {**empty, "note": "RDAP response was not a JSON object"}
 
-    registrar = None
-    abuse_contact = None
-    for entity in data.get("entities", []):
-        roles = entity.get("roles", [])
-        if "registrar" in roles:
-            registrar = _vcard_field(entity, "fn")
-            for sub in entity.get("entities", []):
-                if "abuse" in sub.get("roles", []):
-                    abuse_contact = _vcard_field(sub, "email")
-        elif "abuse" in roles and abuse_contact is None:
-            abuse_contact = _vcard_field(entity, "email")
+    # RDAP is a public registry format we don't control the shape of end to
+    # end - a technically-valid-JSON response with an unexpected structure
+    # (wrong types, missing nesting) must degrade the same as a network
+    # failure, not raise and take crt.sh down with it.
+    try:
+        registration_date = next(
+            (
+                e.get("eventDate")
+                for e in data.get("events", []) or []
+                if isinstance(e, dict) and e.get("eventAction") == "registration"
+            ),
+            None,
+        )
+
+        registrar = None
+        abuse_contact = None
+        for entity in data.get("entities", []) or []:
+            if not isinstance(entity, dict):
+                continue
+            roles = entity.get("roles") or []
+            if "registrar" in roles:
+                registrar = _vcard_field(entity, "fn")
+                for sub in entity.get("entities", []) or []:
+                    if isinstance(sub, dict) and "abuse" in (sub.get("roles") or []):
+                        abuse_contact = _vcard_field(sub, "email")
+            elif "abuse" in roles and abuse_contact is None:
+                abuse_contact = _vcard_field(entity, "email")
+    except (AttributeError, TypeError) as exc:
+        return {**empty, "note": f"RDAP response had an unexpected shape: {exc}"}
 
     return {
         "available": True,
@@ -101,8 +122,19 @@ def _parse_crtsh_date(value: str | None) -> datetime | None:
         return None
 
 
-def _crtsh_lookup(domain: str) -> dict[str, Any]:
+def _crtsh_cache_get(domain: str) -> dict[str, Any] | None:
     cached = _crtsh_cache.get(domain)
+    if cached is None:
+        return None
+    cached_at, result = cached
+    if time.time() - cached_at >= CRTSH_CACHE_TTL_SECONDS:
+        del _crtsh_cache[domain]
+        return None
+    return result
+
+
+def _crtsh_lookup(domain: str) -> dict[str, Any]:
+    cached = _crtsh_cache_get(domain)
     if cached is not None:
         return cached
 
@@ -124,12 +156,19 @@ def _crtsh_lookup(domain: str) -> dict[str, Any]:
     except ValueError:
         return {**empty, "note": "crt.sh response was not valid JSON"}
 
+    if not isinstance(entries, list):
+        return {**empty, "note": "crt.sh response was not a JSON array"}
+
     if not entries:
         result = {**empty, "available": True, "note": "no certificates logged for this domain"}
-        _crtsh_cache[domain] = result
+        _crtsh_cache[domain] = (time.time(), result)
         return result
 
-    dates = [d for d in (_parse_crtsh_date(e.get("not_before")) for e in entries) if d is not None]
+    dates = [
+        d
+        for d in (_parse_crtsh_date(e.get("not_before")) for e in entries if isinstance(e, dict))
+        if d is not None
+    ]
     if not dates:
         result = {**empty, "available": True, "note": "certificates logged but none had a parseable issue date"}
     else:
@@ -142,8 +181,36 @@ def _crtsh_lookup(domain: str) -> dict[str, Any]:
             "note": None,
         }
 
-    _crtsh_cache[domain] = result
+    _crtsh_cache[domain] = (time.time(), result)
     return result
+
+
+def _truncate_str(value: Any, max_chars: int) -> Any:
+    if not isinstance(value, str) or len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "…"
+
+
+def _cap_response_size(result: dict[str, Any]) -> dict[str, Any]:
+    """Enforce the ~2KB MCP response budget (CLAUDE.md: every tool response
+    under ~2KB). Only free-text fields get shortened - structured fields
+    (available/age_days/dates) are never dropped, since those are what a
+    caller actually branches on. A caller-controlled domain or a malformed
+    upstream field are the only realistic ways this budget gets threatened.
+    """
+    if len(json.dumps(result).encode("utf-8")) <= MAX_RESPONSE_BYTES:
+        return {**result, "truncated": False}
+
+    capped = dict(result)
+    capped["domain"] = _truncate_str(result["domain"], _MAX_FIELD_CHARS)
+    for section in ("rdap", "cert"):
+        section_data = dict(result.get(section) or {})
+        for field in ("registrar", "abuse_contact", "note", "earliest_seen", "registration_date"):
+            if field in section_data:
+                section_data[field] = _truncate_str(section_data[field], _MAX_FIELD_CHARS)
+        capped[section] = section_data
+    capped["truncated"] = True
+    return capped
 
 
 def domain_intel(domain: str) -> dict[str, Any]:
@@ -152,8 +219,9 @@ def domain_intel(domain: str) -> dict[str, Any]:
     Never raises because one source is down - each half degrades to
     available=False with a note instead.
     """
-    return {
+    result = {
         "domain": domain,
         "rdap": _rdap_lookup(domain),
         "cert": _crtsh_lookup(domain),
     }
+    return _cap_response_size(result)

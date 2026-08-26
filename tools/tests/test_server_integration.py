@@ -11,6 +11,7 @@ test_domain_intel.py.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -92,16 +93,21 @@ def test_unknown_fixture_returns_error_over_the_wire(running_server):
 
 def test_domain_intel_reachable_over_streamable_http(running_server):
     """Real RDAP/crt.sh calls, not mocked - proves the whole path is wired,
-    not just the HTTP transport. Only asserts on RDAP: crt.sh has been down
-    (502) throughout this feature's development (PLAN.md §7), and
-    domain_intel is specifically designed to degrade that gracefully rather
-    than fail the call, so asserting on it here would make this test as
-    flaky as crt.sh itself."""
+    not just the HTTP transport. Deliberately asserts on structure only
+    (domain echoed back, both sections present), never on live content: a
+    volatile upstream value (registrar name, RDAP/crt.sh being reachable at
+    all) would make this test only as reliable as those services, exactly
+    the flakiness domain_intel's own graceful-degradation contract exists
+    to route around - is_error stays False either way, which is what this
+    test is actually here to prove."""
     tools, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": "google.com"})
 
     assert "domain_intel" in [t.name for t in tools.tools]
     assert not result.is_error
-    assert "MarkMonitor" in result.content[0].text
+    payload = json.loads(result.content[0].text)
+    assert payload["domain"] == "google.com"
+    assert "available" in payload["rdap"]
+    assert "available" in payload["cert"]
 
 
 def test_domain_intel_empty_domain_returns_error_over_the_wire(running_server):
