@@ -78,11 +78,20 @@ def _rdap_lookup(domain: str) -> dict[str, Any]:
     # end - a technically-valid-JSON response with an unexpected structure
     # (wrong types, missing nesting) must degrade the same as a network
     # failure, not raise and take crt.sh down with it.
+    events = data.get("events", [])
+    if not isinstance(events, list):
+        # A string would silently iterate to individual characters here
+        # (all filtered out by the isinstance(e, dict) check below) and come
+        # back as available=True with "not published" - technically-valid
+        # JSON with a malformed "events" field should itself count as a
+        # malformed RDAP response, not a domain with no registration event.
+        return {**empty, "note": "RDAP response had an unexpected shape: 'events' was not a list"}
+
     try:
         registration_date = next(
             (
                 e.get("eventDate")
-                for e in data.get("events", []) or []
+                for e in events
                 if isinstance(e, dict) and e.get("eventAction") == "registration"
             ),
             None,
