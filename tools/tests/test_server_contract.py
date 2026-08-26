@@ -7,10 +7,12 @@ itself is covered separately in test_server_integration.py.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from imports_mcp.server import FIXTURES_DIR, parse_message
+from imports_mcp.server import FIXTURES_DIR, MAX_RESPONSE_BYTES, _cap_response, parse_message
 
 CONTRACT_KEYS = (
     "from",
@@ -22,6 +24,7 @@ CONTRACT_KEYS = (
     "received_chain",
     "urls",
     "attachments",
+    "truncated",
 )
 
 FIXTURE_NAMES = sorted(p.name for p in FIXTURES_DIR.glob("*.eml"))
@@ -77,3 +80,40 @@ def test_unknown_fixture_is_rejected():
 def test_path_traversal_is_rejected():
     with pytest.raises(ToolError):
         parse_message("../../.env")
+
+
+def test_non_eml_file_in_fixtures_dir_is_rejected():
+    # A real, regular file inside FIXTURES_DIR that isn't on the advertised
+    # .eml whitelist must still be refused, not just path traversal.
+    decoy = FIXTURES_DIR / "not-a-fixture.txt"
+    decoy.write_text("not an eml file")
+    try:
+        with pytest.raises(ToolError):
+            parse_message("not-a-fixture.txt")
+    finally:
+        decoy.unlink()
+
+
+def test_cap_response_leaves_small_results_untouched():
+    small = {"authentication_results": [], "received_chain": [], "urls": [], "attachments": []}
+    capped = _cap_response(small)
+    assert capped["truncated"] is False
+    assert "omitted" not in capped
+
+
+def test_cap_response_truncates_oversized_received_chain_under_the_2kb_cap():
+    huge = {
+        "from": None,
+        "reply_to": None,
+        "return_path": None,
+        "subject": "",
+        "date": "",
+        "urls": [],
+        "attachments": [],
+        "authentication_results": [],
+        "received_chain": [f"Received: from host{i}.example ({'x' * 80})" for i in range(200)],
+    }
+    capped = _cap_response(huge)
+    assert capped["truncated"] is True
+    assert capped["omitted"]["received_chain"] > 0
+    assert len(json.dumps(capped, ensure_ascii=False).encode("utf-8")) <= MAX_RESPONSE_BYTES

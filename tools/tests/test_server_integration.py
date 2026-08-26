@@ -22,13 +22,30 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent
-TEST_PORT = 8951
-SERVER_URL = f"http://127.0.0.1:{TEST_PORT}/mcp"
 
 
-def _wait_for_port(port: int, timeout: float = 10.0) -> None:
+def _pick_free_port() -> int:
+    """Ask the OS for an unused port instead of hardcoding one — a fixed port
+    makes concurrent test runs (or an unrelated local service) flaky, per
+    Qodo's finding on this test."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _wait_for_server(proc: subprocess.Popen, port: int, timeout: float = 10.0) -> None:
+    """Poll for the port opening, but fail fast (with the captured output) if
+    the child process has already exited — a successful TCP connect alone
+    doesn't prove *our* server is what's listening, and waiting out the full
+    timeout on a dead child just makes failures slower to diagnose."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            output = proc.stdout.read() if proc.stdout else ""
+            raise RuntimeError(
+                f"imports-mcp server exited early (code {proc.returncode}) "
+                f"before opening port {port}:\n{output}"
+            )
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return
@@ -39,8 +56,10 @@ def _wait_for_port(port: int, timeout: float = 10.0) -> None:
 
 @pytest.fixture(scope="module")
 def running_server():
+    port = _pick_free_port()
+    server_url = f"http://127.0.0.1:{port}/mcp"
     env = os.environ.copy()
-    env["IMPORTS_MCP_PORT"] = str(TEST_PORT)
+    env["IMPORTS_MCP_PORT"] = str(port)
     proc = subprocess.Popen(
         [sys.executable, "-m", "imports_mcp.server"],
         cwd=str(TOOLS_DIR),
@@ -50,8 +69,8 @@ def running_server():
         text=True,
     )
     try:
-        _wait_for_port(TEST_PORT)
-        yield SERVER_URL
+        _wait_for_server(proc, port)
+        yield server_url
     finally:
         proc.terminate()
         try:
