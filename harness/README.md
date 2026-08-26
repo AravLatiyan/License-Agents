@@ -48,7 +48,14 @@ One-tool (`quarantine_stub`) MCP server used only to prove the approval-gate wir
 (T-015) before `tools/imports-mcp` (T-012, owner O2) exists. Exposed over Streamable HTTP
 because TrueForge only connects to `type: "remote"` (URL-based) MCP servers — no local/stdio
 type in this version. Never reference it from `harness/agent.json`; that file stays pointed at
-the real `imports-mcp` server once T-012 lands.
+the real `imports-mcp` server once T-012 lands. The tool response caps `message_id` so the
+serialized reply stays under the ~2KB MCP response limit, flagging `truncated: true` if the
+caller-supplied id had to be cut — see `stub-mcp-server.test.js`.
+
+**Reproducing the approval-gate proof:** `harness/test/approval-gate-verification/` has a
+committed throwaway test-agent payload and script that replay the exact registration →
+discovery → gated-agent-creation steps from a clean checkout, plus exact cleanup instructions.
+See that directory's README. `harness/agent.json` is never touched by it.
 
 **If running this (or anything under `harness/`) from WSL2:** don't run it against `/mnt/c`
 directly — this repo is OneDrive-synced, and WSL's cross-filesystem access to it stalls badly on
