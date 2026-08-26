@@ -42,6 +42,12 @@ non-http(s) schemes), parses the final HTML with `node-html-parser` (never regex
 that ask for a password and post to a different origin. `node --test` runs the self-tests
 against a local-only fixture server — never a real domain.
 
+**SSRF guard:** the initial URL and every redirect hop are resolved and refused if they land on
+loopback, RFC1918, link-local (incl. cloud-metadata `169.254.169.254`), or unspecified addresses
+— checked against the *resolved* IP, not just the hostname string, so a domain that resolves to
+an internal address is also caught. `allowPrivateNetworkTargets: true` opts back in and exists
+only for `detonate.test.js`'s own local fixture server; never set it for a real detonation.
+
 ## stub-mcp-server.js — throwaway, not the product
 
 One-tool (`quarantine_stub`) MCP server used only to prove the approval-gate wiring end to end
