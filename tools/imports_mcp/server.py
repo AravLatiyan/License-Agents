@@ -22,11 +22,18 @@ from imports_mcp.normaliser import parse_message as _parse_message
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 
 # Rule 2880706: MCP tool responses must stay under ~2KB and signal truncation.
-# received_chain/urls/authentication_results are the fields that grow with a
-# large or hostile message; they're trimmed first, in that order, until the
-# serialized response fits.
+# List fields grow with a large or hostile message and are emptied first, in
+# this order (one entry at a time, tracked in `omitted`). If the response is
+# still oversized once every list is empty, the overflow is in a scalar
+# string field instead - subject, date, or an address/display name - so
+# those are shortened next, same "cut it down until it fits" approach.
+# Nothing is ever assumed to fit: the serialized size is re-checked after
+# every single step, list or string.
 MAX_RESPONSE_BYTES = 2000
-_TRIMMABLE_FIELDS = ("received_chain", "urls", "authentication_results")
+_TRIMMABLE_LIST_FIELDS = ("received_chain", "urls", "authentication_results", "attachments")
+_TRIMMABLE_STRING_FIELDS = ("subject", "date")
+_TRIMMABLE_ADDRESS_FIELDS = ("from", "reply_to", "return_path")
+_STRING_SHRINK_CHARS = 40
 
 mcp = MCPServer("imports-mcp")
 
@@ -54,12 +61,29 @@ def _serialized_size(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
 
+def _shrink_string(value: str) -> str:
+    """Cuts one chunk off the end of value, leaving an ellipsis marker so a
+    caller can tell the field was cut short rather than genuinely this
+    short. Must strictly shrink toward "" (not plateau at "…") so a caller
+    looping "shrink until it fits" always terminates even when this field
+    alone can't make the response fit and every other field is untouched."""
+    if len(value) <= _STRING_SHRINK_CHARS:
+        return ""
+    return value[: -_STRING_SHRINK_CHARS] + "…"
+
+
 def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -> dict[str, Any]:
     """Cap the serialized response at ~max_bytes, with an explicit indicator.
 
-    Adds `truncated` (bool) and, only when something was cut, `omitted`
-    (per-field count of dropped entries) — a caller can tell evidence was
-    trimmed, and how much, rather than silently getting a partial result.
+    Adds `truncated` (bool) and, once true, `omitted` (per-field count of
+    dropped list entries) — a caller can tell evidence was trimmed, and how
+    much, rather than silently getting a partial result. List fields are
+    emptied first (received_chain/urls/authentication_results/attachments,
+    in that order); if that alone isn't enough, subject/date/address fields
+    are shortened next, character by character rather than dropped outright
+    — an oversized value is itself potential evidence, so it's kept in
+    truncated form instead of disappearing. The final serialized size is
+    verified after every step, never assumed to fit.
     """
     capped = dict(result)
     capped["truncated"] = False
@@ -67,17 +91,43 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
         return capped
 
     omitted: dict[str, int] = {}
-    for field in _TRIMMABLE_FIELDS:
-        items = list(capped.get(field) or [])
-        while items and _serialized_size({**capped, field: items, "truncated": True, "omitted": omitted}) > max_bytes:
-            items.pop()
-            omitted[field] = omitted.get(field, 0) + 1
-        capped[field] = items
-        if _serialized_size({**capped, "truncated": True, "omitted": omitted}) <= max_bytes:
-            break
-
     capped["truncated"] = True
     capped["omitted"] = omitted
+
+    def fits() -> bool:
+        return _serialized_size(capped) <= max_bytes
+
+    for field in _TRIMMABLE_LIST_FIELDS:
+        items = list(capped.get(field) or [])
+        capped[field] = items
+        while items and not fits():
+            items.pop()
+            omitted[field] = omitted.get(field, 0) + 1
+        if fits():
+            return capped
+
+    for field in _TRIMMABLE_STRING_FIELDS:
+        value = capped.get(field)
+        while isinstance(value, str) and value and not fits():
+            value = _shrink_string(value)
+            capped[field] = value
+        if fits():
+            return capped
+
+    for field in _TRIMMABLE_ADDRESS_FIELDS:
+        original_address = capped.get(field)
+        if not isinstance(original_address, dict):
+            continue
+        address = dict(original_address)  # copy - never mutate the caller's result
+        capped[field] = address
+        for sub_field in ("display_name", "address"):
+            value = address.get(sub_field)
+            while isinstance(value, str) and value and not fits():
+                value = _shrink_string(value)
+                address[sub_field] = value
+            if fits():
+                return capped
+
     return capped
 
 
