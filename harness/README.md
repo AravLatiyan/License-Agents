@@ -35,6 +35,17 @@ add an entry here:
 Those four names are the **four sequential licence gates** (§10, §17) — everything else on the
 MCP server stays ungated.
 
+`instructions` (T-023) delegates to three named subagents run in parallel via `dynamic_sub_agents`
+(no separate config needed — that's a TrueForge-native mechanism, we only describe the remits in
+prose): **INFRASTRUCTURE** (`domain_intel`, `url_reputation`, `detonate`), **IDENTITY** (no tool —
+display-name vs. Reply-To/Return-Path and lookalike-domain checks on fields the parser already
+extracted), **HISTORY** (`correspondence_history`). Matches §10's architecture table exactly.
+Structured (non-prose) evidence output is T-024's job, not this one — each subagent still just
+reports back in prose for now. **Written, not yet runtime-verified** — no local TrueForge instance
+was running this session to confirm against a live server the way T-013/T-017 did; same schema/field
+(`instructions`) already accepted there, so low risk, but flagging it rather than claiming proof we
+don't have.
+
 ## detonate.js
 
 Text-mode detonation (§14 Slice 1, T-014): follows redirects (capped at 10 hops, refuses

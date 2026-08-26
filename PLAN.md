@@ -29,13 +29,13 @@ Sections §1–§8 are living. Sections §9–§18 are the reference and change 
 
 ```
 PHASE:        DAY 1 — SLICE 1 (ugly vertical slice)
-DATE:         2026-08-25
-DAYS LEFT:    5
+DATE:         2026-08-26
+DAYS LEFT:    4
 ACTIVE:       Owner 1 (Harness) · Owner 2 (Tools)
 DORMANT:      Owner 3 (Cockpit) · Owner 4 (Mission)
-TODAY'S GOAL: Slice 1 running end to end, ugly (O1). Intel sources + MCP transport settled, normaliser starting (O2).
-BLOCKED ON:   T-015 live-fire test — no model provider configured (§5)
-LAST UPDATED: 2026-08-26 10:35 · PR #1, #2, #3, #5 merged (T-013/T-017/T-002/T-014+Qodo-fixes/T-003/T-004 all on main); PR #4 (T-015) merging now — gate wiring proven, Qodo clean except the documented PR-size finding; live-fire still blocked on a model provider key
+TODAY'S GOAL: Slice 1 running end to end, ugly (O1) — three subagents now defined in agent.json. Intel sources + MCP transport settled, normaliser starting (O2).
+BLOCKED ON:   T-015 live-fire test — no model provider configured; T-023 runtime verification — no TrueForge instance running this session (§5)
+LAST UPDATED: 2026-08-26 12:08 · PR #1-#5 merged (T-013/T-017/T-002/T-014+Qodo-fixes/T-015+Qodo-fixes/T-003/T-004 all on main); T-023 done (three subagents defined in agent.json, written not runtime-verified — §5); PR #12 (T-016) Qodo-clean, still needs 2 human approvals, not touched further; live-fire still blocked on a model provider key
 ```
 
 ## 🚨 DO THIS FIRST — before any task below
@@ -103,6 +103,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 2026-08-26 · T-015 (Qodo pass) · [O1] · Re-checked PR #4 against current main first: findings #1/#4/#5/#6/#7 from Qodo's review (attached to stale commit 5a31de1) all trace to `detonate.js`/`detonate.test.js`/`.gitignore`, which landed in PR #3 and aren't part of PR #4's diff at all — no rebase was needed, PR #4 already sits on current main. Fixed the two real bugs/rule-violations left: `quarantine_stub` now caps `message_id` so the serialized response stays under the ~2KB MCP limit (`truncated` flag added, regression test in `stub-mcp-server.test.js`); added `harness/test/approval-gate-verification/` (throwaway test-agent JSON + `verify-approval-gate.sh` + exact cleanup instructions) so the T-015 gate-wiring proof (§4 above) is reproducible from a clean checkout — `harness/agent.json` still untouched. The 400-line PR-size finding is documented, not code-fixed — see §6. 12/12 tests pass. Pushed to PR #4, not merged — waiting on Qodo to review the new HEAD
 2026-08-26 · T-015 (Qodo pass 2) · [O1] · Qodo's incremental review re-scans full file content at HEAD, not a diff against current main (see §7) — so it re-flagged `detonate.js`/`detonate.test.js`/`.gitignore` even though they're identical to main. Two of those findings turned out genuinely worth fixing on their own merits, so fixed for real this time instead of re-documenting: (1) **SSRF guard added to `detonate.js`** — the initial URL and every redirect hop now resolve the hostname and refuse loopback/RFC1918/link-local/cloud-metadata addresses (checked against the resolved IP, not just the hostname, so DNS-rebinding-style domains are caught too); `allowPrivateNetworkTargets: true` is the explicit, narrow opt-in `detonate.test.js`'s own fixture now uses, plus a new default-refusal regression test. This is a real production SSRF fix, not a Daytona workaround, and needed no Daytona credentials. (2) PR description now explicitly names `.gitignore` and its rationale (Rule 2880666). Re-verified the PR-size finding (Rule 2880655) is genuinely not reducible: lockfile is 106 packages with no duplicate/platform-variant bloat, all transitively required by the 3 declared dependencies — kept documented, not code-changed. 13/13 tests pass
 2026-08-26 · T-015 (Qodo pass 3) · [O1] · Dismissed findings #4 (.gitignore undocumented) and #7 (approval-gate reproducibility) via `@qodo dismiss` replies on their review-comment threads, citing current evidence already in the PR (description names `.gitignore`; `harness/test/approval-gate-verification/` provides the reproducible setup) rather than changing working code to appease stale evidence — Qodo's own reply independently confirmed #7's evidence was stale. Final state before merge: 0 Bugs, 1 Rule violation (the documented, genuinely-unfixable PR-size finding), 0 Skill insights. Merged into main, resolving the PLAN.md conflict against PR #5 (T-003/T-004) in the same merge commit
+2026-08-26 · T-023 · [O1] · `harness/agent.json`'s `instructions` now explicitly delegates to three named subagents run in parallel via TrueForge's existing `dynamic_sub_agents` mechanism (configuration, not new code — CLAUDE.md "don't rebuild the harness"), matching §10's architecture table field-for-field: INFRASTRUCTURE (`domain_intel`, `url_reputation`, `detonate`), IDENTITY (no tool — display-name vs. Reply-To/Return-Path + lookalike-domain checks on already-parsed fields), HISTORY (`correspondence_history`). Structured (non-prose) evidence output is explicitly left to T-024, not attempted here. `agent.json` still valid JSON, same top-level schema already runtime-confirmed in T-013/T-017 (only the `instructions` string value changed) — result: **written, not yet runtime-verified**, no local TrueForge instance was running this session to POST it against a live server; harness `node --test` re-run clean (13/13, unaffected — no JS changed) as a regression check only, not a substitute for that verification
 
 ---
 
@@ -111,6 +112,7 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 | ID | Owner | Blocked on | Since | Who can unblock |
 |---|---|---|---|---|
 | T-015 live-fire test | O1 | No model provider configured anywhere (§1 DO THIS FIRST still unchecked). Gate wiring itself is proven (§4); what's missing is watching a real turn actually emit `tool.approval_required` and resuming it | 2026-08-25 | Whoever configures a model provider key + spend cap in TrueForge's settings UI (`localhost:8790`) — enter it there, never paste it into chat |
+| T-023 runtime verification | O1 | `agent.json`'s new subagent-delegation instructions were never POSTed to a live TrueForge server this session (none running) — same `instructions` field already confirmed accepted in T-013/T-017, so low risk, but not proven for this specific content | 2026-08-26 | Whoever next has TrueForge running locally: `curl -X POST http://localhost:8790/api/v1/agents -d @harness/agent.json` and confirm 200/201, same as T-017 |
 
 ---
 
@@ -308,7 +310,6 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-020** [O2] `domain_intel` — RDAP age/registrar/abuse contact + crt.sh cert age
 - **T-021** [O2] `url_reputation` — URLhaus
 - **T-022** [O2] `correspondence_history` — IMAP search for prior contact
-- **T-023** [O1] Three subagents — INFRASTRUCTURE / IDENTITY / HISTORY, running in parallel
 - **T-024** [O1] Prompt subagents to return **structured evidence, not prose**; narrow remits so they don't duplicate work
 - **T-025** [O1] Cheap model for subagents, strong model for the lead
 - **T-026** [O2] `detonate` MCP wrapper dispatching O1's sandbox job
