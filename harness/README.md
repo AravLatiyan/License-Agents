@@ -35,6 +35,25 @@ add an entry here:
 Those four names are the **four sequential licence gates** (§10, §17) — everything else on the
 MCP server stays ungated.
 
+`instructions` (T-023) **asks** the root agent to delegate to three named subagents — INFRASTRUCTURE
+(`domain_intel`, `url_reputation`, `detonate`), IDENTITY (display-name vs. Reply-To/Return-Path and
+lookalike-domain checks on fields the parser already extracted), HISTORY (`correspondence_history`)
+— matching §10's architecture table. **This is prompt guidance, not enforced configuration.**
+`dynamic_sub_agents` has no support for pre-defined named subagents or per-agent tool scopes: per
+TrueForge's own docs (`trueforge.dev/key-features/subagents`), the root agent's model decides at
+runtime whether and how to delegate, generating its own focused instructions via the built-in
+`create_sub_agent` tool — not from this prose — and every spawned subagent receives the **full**
+tool set the root has, identical to root, with no restriction mechanism. So "IDENTITY: no tool call"
+is a request we're making of the model, not a boundary the platform enforces — nothing stops an
+IDENTITY-labeled subagent from calling `domain_intel` if the model chooses to. Likewise "exactly
+three subagents" is what we're asking for, not a guarantee of what gets spawned.
+Structured (non-prose) evidence output is T-024's job, not this one — each subagent still just
+reports back in prose for now. **Written, not yet runtime-verified** — no local TrueForge instance
+was running this session, so none of the above (whether the root actually spawns three subagents
+matching these names/remits, or whether IDENTITY in practice stays tool-free) has been observed.
+The `instructions` field itself is the same accepted schema as T-013/T-017 (low risk there); the
+open question is the model's actual delegation *behavior*, not whether the JSON is accepted.
+
 ## detonate.js
 
 Text-mode detonation (§14 Slice 1, T-014): follows redirects (capped at 10 hops, refuses
