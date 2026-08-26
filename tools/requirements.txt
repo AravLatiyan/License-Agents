@@ -2,5 +2,6 @@ lxml>=5.0
 mcp>=2.0
 requests>=2.31
 truststore>=0.9
+python-dotenv>=1.0
 pytest>=8.0
 anyio>=4.0
