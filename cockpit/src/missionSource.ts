@@ -26,6 +26,7 @@ const KNOWN_TYPES = new Set<MissionEvent["type"]>([
 
 const KNOWN_LANES = new Set(["infrastructure", "identity", "history"]);
 const GATE_INDICES = new Set([1, 2, 3, 4]);
+const ACTION_NAMES = new Set(["quarantine", "notify_impersonated", "create_block_rule", "file_abuse_report"]);
 
 // --- small structural guards, no validation library - kept dependency-free ---
 
@@ -37,9 +38,25 @@ const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v =
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isNum = (v: unknown): v is number => typeof v === "number";
 const isArr = (v: unknown): v is unknown[] => Array.isArray(v);
+/** isArr plus an element check - `isArr` alone only proves "some array",
+ *  not the element shape the contract actually requires. */
+const isArrOf = (v: unknown, elem: (x: unknown) => boolean): boolean => isArr(v) && v.every(elem);
 
 function fail(index: number, message: string): never {
   throw new Error(`event[${index}]: ${message}`);
+}
+
+const isUrlEntry = (v: unknown): boolean => isRecord(v) && isStr(v.href) && isStr(v.anchor_text);
+const isAttachmentEntry = (v: unknown): boolean => isRecord(v) && isStr(v.filename) && isStr(v.sha256);
+const isRedirectHop = (v: unknown): boolean => isRecord(v) && isStr(v.url) && isNum(v.status);
+
+/** Mirrors DetonationForm's two-branch union: action_invalid true pairs with
+ *  null action_origin/cross_domain, false-or-absent pairs with real values. */
+function isDetonationForm(v: unknown): boolean {
+  if (!isRecord(v) || !isStr(v.action) || !isStr(v.method) || !isBool(v.asks_password)) return false;
+  if (v.action_invalid === true) return v.action_origin === null && v.cross_domain === null;
+  if (v.action_invalid !== undefined && v.action_invalid !== false) return false;
+  return isStr(v.action_origin) && isBool(v.cross_domain);
 }
 
 // --- one checker per nested payload shape in contracts/events.ts - kept in
@@ -53,9 +70,9 @@ function checkParsedMessage(v: unknown, index: number): void {
   if (!isStrOrNull(v.return_path)) fail(index, "message.return_path: expected string or null");
   if (!isStrOrNull(v.display_name)) fail(index, "message.display_name: expected string or null");
   if (!isStr(v.authentication_results)) fail(index, "message.authentication_results: expected string");
-  if (!isArr(v.received_chain)) fail(index, "message.received_chain: expected array");
-  if (!isArr(v.urls)) fail(index, "message.urls: expected array");
-  if (!isArr(v.attachments)) fail(index, "message.attachments: expected array");
+  if (!isArrOf(v.received_chain, isStr)) fail(index, "message.received_chain: expected string[]");
+  if (!isArrOf(v.urls, isUrlEntry)) fail(index, "message.urls: expected {href, anchor_text}[]");
+  if (!isArrOf(v.attachments, isAttachmentEntry)) fail(index, "message.attachments: expected {filename, sha256}[]");
 }
 
 const isDomainIntel = (v: unknown): boolean =>
@@ -67,7 +84,7 @@ const isDomainIntel = (v: unknown): boolean =>
   isStrOrNull(v.cert_issued_at);
 
 const isUrlReputation = (v: unknown): boolean =>
-  isRecord(v) && isStr(v.url) && isBool(v.listed) && isArr(v.tags);
+  isRecord(v) && isStr(v.url) && isBool(v.listed) && isArrOf(v.tags, isStr);
 
 const isIdentityEvidence = (v: unknown): boolean =>
   isRecord(v) &&
@@ -84,7 +101,7 @@ const isCorrespondenceHistory = (v: unknown): boolean =>
   isNum(v.prior_contact_count) &&
   isStrOrNull(v.first_seen) &&
   isStrOrNull(v.last_seen) &&
-  isArr(v.domains_used);
+  isArrOf(v.domains_used, isStr);
 
 function checkEvidence(lane: string, evidence: unknown, index: number): void {
   const valid =
@@ -101,7 +118,9 @@ function checkEvidence(lane: string, evidence: unknown, index: number): void {
 function checkDetonationResult(v: unknown, index: number): void {
   if (!isRecord(v)) fail(index, "detonation: expected an object");
   if (!isStr(v.url)) fail(index, "detonation.url: expected string");
-  if (!isArr(v.redirect_chain)) fail(index, "detonation.redirect_chain: expected array");
+  if (!isArrOf(v.redirect_chain, isRedirectHop)) {
+    fail(index, "detonation.redirect_chain: expected {url, status}[]");
+  }
   const hasError = "error" in v;
   const hasSuccess = "summary" in v;
   if (hasError === hasSuccess) {
@@ -110,8 +129,11 @@ function checkDetonationResult(v: unknown, index: number): void {
   if (hasError && !isStr(v.error)) fail(index, "detonation.error: expected string");
   if (hasSuccess) {
     if (!isStr(v.final_url)) fail(index, "detonation.final_url: expected string");
-    if (!isArr(v.forms)) fail(index, "detonation.forms: expected array");
+    if (!isArrOf(v.forms, isDetonationForm)) fail(index, "detonation.forms: expected DetonationForm[]");
     if (!isStr(v.summary)) fail(index, "detonation.summary: expected string");
+    if (v.screenshot_id !== undefined && !isStr(v.screenshot_id)) {
+      fail(index, "detonation.screenshot_id: expected string when present");
+    }
   }
 }
 
@@ -176,9 +198,10 @@ export function assertMissionEvent(value: unknown, index: number): MissionEvent 
       if (
         !isRecord(value.action) ||
         !isStr(value.action.action) ||
+        !ACTION_NAMES.has(value.action.action) ||
         !isRecord(value.action.arguments)
       ) {
-        fail(index, "action: expected {action, arguments}");
+        fail(index, "action: expected {action: ProposedActionName, arguments}");
       }
       checkToolApprovalRequired(value.approval, index);
       break;
@@ -187,10 +210,15 @@ export function assertMissionEvent(value: unknown, index: number): MissionEvent 
       if (value.status !== "allow" && value.status !== "deny") {
         fail(index, `status: expected allow|deny, got ${JSON.stringify(value.status)}`);
       }
+      if (value.reason !== undefined && !isStr(value.reason)) {
+        fail(index, "reason: expected string when present");
+      }
       break;
     case "mission.action_executed":
       if (!GATE_INDICES.has(value.gate_index as number)) fail(index, "gate_index: expected 1-4");
-      if (!isStr(value.action)) fail(index, "action: expected string");
+      if (!isStr(value.action) || !ACTION_NAMES.has(value.action)) {
+        fail(index, `action: expected one of ${[...ACTION_NAMES].join("|")}, got ${JSON.stringify(value.action)}`);
+      }
       if (!isStr(value.result_summary)) fail(index, "result_summary: expected string");
       break;
     case "mission.complete":
