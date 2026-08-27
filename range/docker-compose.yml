@@ -10,5 +10,5 @@ services:
     build:
       context: ./fake-portal
     container_name: universal-imports-fake-portal
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
