@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "ceo@northgate-trust.example",
+    "Name": "Daniel Mercer"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "URGENT — payment approval required",
+  "ReplyTo": [
+    {
+      "Email": "daniel.mercer@northgate-trust-support.example",
+      "Name": "Daniel Mercer"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<bounce@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=northgate-trust.example; dkim=fail; dmarc=fail header.from=northgate-trust.example",
+    "Received": "from mail.northgate-trust.example (203.0.113.10) by mx.universal-imports.example; Wed, 26 Aug 2026 08:00:00 +0000"
+  },
+  "Text": "URGENT: Please approve the outstanding payment immediately.\n\nReview the payment verification portal: http://localhost:8080/\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>URGENT: Please approve the outstanding payment immediately.</p><p><a href=\"http://localhost:8080/\">Review payment verification</a></p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

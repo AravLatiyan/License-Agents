@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "notifications@meridian-courier.example",
+    "Name": "Meridian Courier Notifications"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Delivery attempt failed — reschedule required",
+  "ReplyTo": [
+    {
+      "Email": "delivery-update@meridian-courier-track.example",
+      "Name": "Meridian Courier Notifications"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<notifications@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=meridian-courier.example; dkim=fail; dmarc=fail header.from=meridian-courier.example",
+    "Received": "from notifications.meridian-courier.example (198.51.100.130) by mx.universal-imports.example; Wed, 26 Aug 2026 18:00:00 +0000"
+  },
+  "Text": "We were unable to complete delivery to your address.\n\nReschedule your delivery and confirm your details at http://localhost:8080/.\n\nIf you do not respond today, the shipment may be returned.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>We were unable to complete delivery to your address.</p><p><a href=\"http://localhost:8080/\">Reschedule your delivery</a> and confirm your details.</p><p>If you do not respond today, the shipment may be returned.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

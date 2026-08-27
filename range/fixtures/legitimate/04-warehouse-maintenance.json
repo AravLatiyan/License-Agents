@@ -1,0 +1,20 @@
+{
+  "From": {
+    "Email": "warehouse@universal-imports.example",
+    "Name": "Universal Imports Warehouse"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Warehouse maintenance — Saturday morning",
+  "Headers": {
+    "Return-Path": "<warehouse@universal-imports.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=universal-imports.example; dkim=pass; dmarc=pass header.from=universal-imports.example",
+    "Received": "from mail.universal-imports.example (192.0.2.13) by mx.universal-imports.example; Wed, 26 Aug 2026 13:00:00 +0000"
+  },
+  "Text": "Hello everyone,\n\nThe warehouse will undergo routine equipment maintenance on Saturday morning from 08:00 to 11:00.\n\nNormal operations will resume afterward. Please plan any warehouse visits accordingly.\n\nRegards,\nWarehouse Team",
+  "HTML": "<html><body><p>Hello everyone,</p><p>The warehouse will undergo routine equipment maintenance on Saturday morning from 08:00 to 11:00.</p><p>Normal operations will resume afterward. Please plan any warehouse visits accordingly.</p><p>Regards,<br>Warehouse Team</p></body></html>"
+}

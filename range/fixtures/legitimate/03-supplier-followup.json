@@ -1,0 +1,20 @@
+{
+  "From": {
+    "Email": "accounts@universal-imports.example",
+    "Name": "Universal Imports Accounts"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Supplier invoice review — September",
+  "Headers": {
+    "Return-Path": "<accounts@universal-imports.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=universal-imports.example; dkim=pass; dmarc=pass header.from=universal-imports.example",
+    "Received": "from mail.universal-imports.example (192.0.2.12) by mx.universal-imports.example; Wed, 26 Aug 2026 11:30:00 +0000"
+  },
+  "Text": "Hi,\n\nCould you review the September supplier invoices before Friday's accounts meeting?\n\nPlease add any questions to the shared finance notes so we can discuss them together.\n\nThanks,\nAccounts Team",
+  "HTML": "<html><body><p>Hi,</p><p>Could you review the September supplier invoices before Friday's accounts meeting?</p><p>Please add any questions to the shared finance notes so we can discuss them together.</p><p>Thanks,<br>Accounts Team</p></body></html>"
+}

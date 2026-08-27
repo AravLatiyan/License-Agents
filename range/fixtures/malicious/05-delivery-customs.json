@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "delivery@meridian-courier.example",
+    "Name": "Meridian Courier Delivery"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Delivery held — customs payment required",
+  "ReplyTo": [
+    {
+      "Email": "customs@meridian-courier-payments.example",
+      "Name": "Meridian Courier Customs"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<dispatch@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=meridian-courier.example; dkim=fail; dmarc=fail header.from=meridian-courier.example",
+    "Received": "from delivery.meridian-courier.example (198.51.100.50) by mx.universal-imports.example; Wed, 26 Aug 2026 12:20:00 +0000"
+  },
+  "Text": "Your shipment is currently being held for customs clearance.\n\nA customs payment is required to release the delivery. Complete the payment verification at http://localhost:8080/.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>Your shipment is currently being held for customs clearance.</p><p>A customs payment is required to release the delivery.</p><p><a href=\"http://localhost:8080/\">Complete payment verification</a></p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}
