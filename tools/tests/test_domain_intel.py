@@ -241,6 +241,43 @@ def test_oversized_caller_domain_is_truncated_with_flag(mock_get):
     assert _response_size(result) <= MAX_RESPONSE_BYTES
 
 
+def test_truncated_flag_itself_is_counted_toward_the_2kb_budget():
+    """Before the fix, _cap_response_size measured `result` before adding
+    the `truncated` key, so a result sitting exactly at the boundary could
+    be returned with truncated=False even though adding the flag itself
+    pushed the final serialized payload a few bytes over MAX_RESPONSE_BYTES.
+    """
+
+    def build(padding: int) -> dict:
+        return {
+            "domain": "example.com",
+            "rdap": {
+                "available": True,
+                "registrar": "x" * padding,
+                "registration_date": None,
+                "abuse_contact": None,
+                "note": None,
+            },
+            "cert": {"available": False, "earliest_seen": None, "age_days": None, "note": None},
+        }
+
+    # Binary-search the padding so the un-flagged payload sits exactly at
+    # the boundary - avoids hardcoding a byte count that json.dumps' exact
+    # formatting could shift under a future stdlib/version change.
+    lo, hi = 0, MAX_RESPONSE_BYTES
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(build(mid)).encode("utf-8")) <= MAX_RESPONSE_BYTES:
+            lo = mid
+        else:
+            hi = mid - 1
+    result = build(lo)
+    assert len(json.dumps(result).encode("utf-8")) <= MAX_RESPONSE_BYTES  # boundary check holds
+
+    capped = domain_intel_module._cap_response_size(result)
+    assert len(json.dumps(capped).encode("utf-8")) <= MAX_RESPONSE_BYTES
+
+
 @patch("imports_mcp.domain_intel.requests.get")
 def test_oversized_upstream_field_is_truncated_with_flag(mock_get):
     bloated_rdap = {**RDAP_SUCCESS}

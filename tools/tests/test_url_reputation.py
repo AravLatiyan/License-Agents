@@ -177,3 +177,75 @@ def test_oversized_tags_are_truncated_under_the_2kb_cap(mock_post):
     assert result["truncated"] is True
     assert result["omitted"]["tags"] > 0
     assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= MAX_RESPONSE_BYTES
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_oversized_threat_url_status_and_date_added_are_truncated_under_the_cap(mock_post):
+    # Before the fix, only tags/note/url were ever shrunk - an oversized
+    # threat/url_status/date_added left the response over budget forever,
+    # and a one-character note/url plateaued the shrink loop instead of
+    # terminating (Qodo findings #3 and #8 on PR #19).
+    huge_response = {
+        **LISTED_RESPONSE,
+        "tags": [],
+        "threat": "malware_download " + "x" * 4000,
+        "url_status": "online " + "y" * 4000,
+        "date_added": "2026-08-25 " + "z" * 4000,
+    }
+    mock_post.return_value = _mock_response(200, huge_response)
+
+    result = url_reputation("http://223.151.72.214:44130/i")
+
+    assert result["truncated"] is True
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= MAX_RESPONSE_BYTES
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_shrink_loop_terminates_when_every_field_is_oversized_at_once(mock_post):
+    # The exact scenario the old max(1, len(value) - 200) logic could hang
+    # on: once note/url each plateau at one leftover character, an
+    # unbounded threat/url_status/date_added kept the response over budget
+    # with no field left that the old code would ever shrink further.
+    huge_response = {
+        "query_status": "ok",
+        "id": "1",
+        "url": "http://" + "u" * 4000,
+        "url_status": "a" * 4000,
+        "date_added": "b" * 4000,
+        "threat": "c" * 4000,
+        "tags": [f"tag-{i}" for i in range(500)],
+    }
+    mock_post.return_value = _mock_response(200, huge_response)
+
+    result = url_reputation("http://" + "u" * 4000)
+
+    assert result["truncated"] is True
+    assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) <= MAX_RESPONSE_BYTES
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_non_list_tags_degrades_to_unavailable_instead_of_crashing(mock_post):
+    # A malformed-but-valid-JSON tags field (an int here) used to reach the
+    # caller as a contract-invalid shape and crash _cap_response's
+    # list(tags) call outright for a non-iterable scalar.
+    mock_post.return_value = _mock_response(200, {**LISTED_RESPONSE, "tags": 123})
+
+    result = url_reputation("http://223.151.72.214:44130/i")
+
+    assert result["available"] is False
+    assert result["tags"] == []
+    assert "unexpected shape" in result["note"]
+
+
+@patch.dict("os.environ", {"URLHAUS_AUTH_KEY": "test-key"})
+@patch("imports_mcp.url_reputation.requests.post")
+def test_tags_with_non_string_elements_degrades_to_unavailable(mock_post):
+    mock_post.return_value = _mock_response(200, {**LISTED_RESPONSE, "tags": ["ok", 123]})
+
+    result = url_reputation("http://223.151.72.214:44130/i")
+
+    assert result["available"] is False
+    assert "unexpected shape" in result["note"]

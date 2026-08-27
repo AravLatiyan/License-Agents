@@ -50,11 +50,13 @@ def _decode_text(part: EmailMessage) -> str:
         return payload.decode("latin-1", errors="replace")
 
 
-def _parse_address(header_value: str | None) -> dict[str, str] | None:
+def _parse_address(header_value: str | None) -> tuple[str, str] | None:
+    """Returns (display_name, address), or None if the header is absent.
+    display_name is '' (not None) when the header has no display name -
+    the caller decides whether '' should become None for its own field."""
     if not header_value:
         return None
-    display_name, address = parseaddr(header_value)
-    return {"display_name": display_name, "address": address}
+    return parseaddr(header_value)
 
 
 def _urls_from_html(text: str) -> list[dict[str, str]]:
@@ -103,16 +105,27 @@ def _extract_urls(msg: EmailMessage) -> list[dict[str, str]]:
     a phishing message can put one URL in the HTML version a client renders
     and a different one in the plain-text fallback. Extracting from HTML
     alone (or stopping if HTML parsing fails) would silently miss those.
-    """
-    html_part = msg.get_body(preferencelist=("html",))
-    plain_part = msg.get_body(preferencelist=("plain",))
 
-    urls: list[dict[str, str]] = []
-    if html_part is not None:
-        urls.extend(_urls_from_html(_decode_text(html_part)))
-    if plain_part is not None:
-        urls.extend(_urls_from_plain_text(_decode_text(plain_part)))
-    return _dedupe_urls(urls)
+    get_body() only returns the single best-preference part per content
+    type, which misses any secondary/nested multipart/alternative group
+    (e.g. a forwarded message embedded as its own MIME part) - walk() visits
+    every leaf part in the tree instead, so nothing is missed regardless of
+    how many alternative groups the message contains. HTML parts are still
+    collected before plain-text ones (not in document order) so the existing
+    "HTML anchor text wins over a bare-URL dedup match" preference holds
+    however the tree happens to be ordered.
+    """
+    html_urls: list[dict[str, str]] = []
+    plain_urls: list[dict[str, str]] = []
+    for part in msg.walk():
+        if part.is_multipart() or part.is_attachment():
+            continue
+        content_type = part.get_content_type()
+        if content_type == "text/html":
+            html_urls.extend(_urls_from_html(_decode_text(part)))
+        elif content_type == "text/plain":
+            plain_urls.extend(_urls_from_plain_text(_decode_text(part)))
+    return _dedupe_urls(html_urls + plain_urls)
 
 
 def _extract_attachments(msg: EmailMessage) -> list[dict[str, Any]]:
@@ -131,16 +144,32 @@ def _extract_attachments(msg: EmailMessage) -> list[dict[str, Any]]:
 
 
 def parse_message(raw: bytes) -> dict[str, Any]:
-    """Parse a raw RFC822 message into a small structured dict."""
+    """Parse a raw RFC822 message into a small structured dict.
+
+    from/reply_to/return_path are plain address strings (not the whole
+    "Display Name <addr>" header value) - display_name is its own top-level
+    field, taken from the From header only, since that's the only address
+    the shared contract expects a name for. A message can legally carry more
+    than one Authentication-Results header (one per hop that added a check);
+    those are joined with a newline into a single string rather than a list,
+    since the raw text is still fully preserved either way (CLAUDE.md trap
+    #2: read it, never re-verify) - just as one string instead of several.
+    """
     msg: EmailMessage = BytesParser(policy=policy.default).parsebytes(raw)
 
+    from_addr = _parse_address(msg.get("From"))
+    reply_to_addr = _parse_address(msg.get("Reply-To"))
+    return_path_addr = _parse_address(msg.get("Return-Path"))
+
     return {
-        "from": _parse_address(msg.get("From")),
-        "reply_to": _parse_address(msg.get("Reply-To")),
-        "return_path": _parse_address(msg.get("Return-Path")),
+        "message_id": msg.get("Message-ID", "").strip(),
+        "from": from_addr[1] if from_addr else "",
+        "reply_to": reply_to_addr[1] if reply_to_addr else None,
+        "return_path": return_path_addr[1] if return_path_addr else None,
+        "display_name": (from_addr[0] or None) if from_addr else None,
         "subject": msg.get("Subject", ""),
         "date": msg.get("Date", ""),
-        "authentication_results": msg.get_all("Authentication-Results", []),
+        "authentication_results": "\n".join(msg.get_all("Authentication-Results", [])),
         "received_chain": msg.get_all("Received", []),
         "urls": _extract_urls(msg),
         "attachments": _extract_attachments(msg),

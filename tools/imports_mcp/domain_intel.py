@@ -206,9 +206,17 @@ def _cap_response_size(result: dict[str, Any]) -> dict[str, Any]:
     (available/age_days/dates) are never dropped, since those are what a
     caller actually branches on. A caller-controlled domain or a malformed
     upstream field are the only realistic ways this budget gets threatened.
+
+    `truncated` itself is part of the serialized response, so it has to be
+    included *before* the very first size check - checking `result` alone
+    and adding the key afterward can return a payload a few bytes over the
+    declared limit while claiming truncated=False. The truncation branch
+    then re-verifies the final size rather than assuming one round of
+    field-truncation was always enough.
     """
-    if len(json.dumps(result).encode("utf-8")) <= MAX_RESPONSE_BYTES:
-        return {**result, "truncated": False}
+    with_flag = {**result, "truncated": False}
+    if len(json.dumps(with_flag).encode("utf-8")) <= MAX_RESPONSE_BYTES:
+        return with_flag
 
     capped = dict(result)
     capped["domain"] = _truncate_str(result["domain"], _MAX_FIELD_CHARS)
@@ -219,6 +227,19 @@ def _cap_response_size(result: dict[str, Any]) -> dict[str, Any]:
                 section_data[field] = _truncate_str(section_data[field], _MAX_FIELD_CHARS)
         capped[section] = section_data
     capped["truncated"] = True
+
+    if len(json.dumps(capped).encode("utf-8")) > MAX_RESPONSE_BYTES:
+        # One round of truncation to _MAX_FIELD_CHARS wasn't enough - shrink
+        # every free-text field further rather than return an over-budget
+        # payload while still claiming truncated=True fixed it.
+        capped["domain"] = _truncate_str(capped["domain"], 40)
+        for section in ("rdap", "cert"):
+            section_data = dict(capped.get(section) or {})
+            for field in ("registrar", "abuse_contact", "note", "earliest_seen", "registration_date"):
+                if field in section_data:
+                    section_data[field] = _truncate_str(section_data[field], 40)
+            capped[section] = section_data
+
     return capped
 
 

@@ -41,12 +41,32 @@ def _serialized_size(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
 
+# Every upstream-supplied scalar string, not just note/url - threat,
+# url_status, and date_added are just as unbounded/attacker-influenced as
+# note and url are (URLhaus returns them verbatim from whatever submitted
+# the URL). Rule 2880706 covers the whole serialized response, not a
+# hand-picked subset of its fields.
+_TRIMMABLE_STRING_FIELDS = ("note", "url", "threat", "url_status", "date_added")
+
+
+def _shrink_string(value: str) -> str:
+    """Cuts one chunk off the end, strictly shrinking toward "" so a caller
+    looping "shrink until it fits" always terminates - unlike slicing to a
+    fixed length floor, this never plateaus at a single leftover character
+    while the response is still over budget from some other field."""
+    if len(value) <= 200:
+        return ""
+    return value[:-200]
+
+
 def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -> dict[str, Any]:
     """Cap the serialized response at ~max_bytes, with an explicit indicator.
 
     Adds `truncated` (bool) and, only when something was cut, `omitted`
     (which fields were trimmed) — a caller can tell evidence was dropped
-    rather than silently get a partial result.
+    rather than silently get a partial result. `tags` is emptied first,
+    then every scalar string field is shrunk toward "" in turn; the final
+    serialized size is verified after every step, never assumed to fit.
     """
     capped = dict(result)
     capped["truncated"] = False
@@ -54,26 +74,29 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
         return capped
 
     omitted: dict[str, Any] = {}
-
-    tags = list(capped.get("tags") or [])
-    while tags and _serialized_size({**capped, "tags": tags, "truncated": True, "omitted": omitted}) > max_bytes:
-        tags.pop()
-        omitted["tags"] = omitted.get("tags", 0) + 1
-    capped["tags"] = tags
-
-    for field in ("note", "url"):
-        value = capped.get(field)
-        if not isinstance(value, str) or not value:
-            continue
-        while value and _serialized_size({**capped, field: value, "truncated": True, "omitted": omitted}) > max_bytes:
-            value = value[: max(1, len(value) - 200)]
-            omitted[field] = True
-        capped[field] = value
-        if _serialized_size({**capped, "truncated": True, "omitted": omitted}) <= max_bytes:
-            break
-
     capped["truncated"] = True
     capped["omitted"] = omitted
+
+    def fits() -> bool:
+        return _serialized_size(capped) <= max_bytes
+
+    tags = list(capped.get("tags") or [])
+    capped["tags"] = tags
+    while tags and not fits():
+        tags.pop()
+        omitted["tags"] = omitted.get("tags", 0) + 1
+    if fits():
+        return capped
+
+    for field in _TRIMMABLE_STRING_FIELDS:
+        value = capped.get(field)
+        while isinstance(value, str) and value and not fits():
+            value = _shrink_string(value)
+            capped[field] = value
+            omitted[field] = True
+        if fits():
+            return capped
+
     return capped
 
 
@@ -146,12 +169,23 @@ def _url_reputation_uncapped(url: str) -> dict[str, Any]:
     if status != "ok":
         return _unavailable(url, f"URLhaus query_status was {status!r}")
 
+    tags = data.get("tags")
+    if tags is None:
+        tags = []
+    elif not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        # A malformed-but-valid-JSON tags field (e.g. an int, a string, a
+        # list of non-strings) would otherwise reach the caller as a
+        # contract-invalid shape, and crash _cap_response's list(tags) call
+        # outright for a non-iterable scalar - same class of "valid JSON,
+        # wrong shape" guard domain_intel already applies to RDAP's events.
+        return _unavailable(url, "URLhaus response had an unexpected shape: 'tags' was not a list of strings")
+
     return {
         "url": url,
         "available": True,
         "listed": True,
         "threat": data.get("threat"),
-        "tags": data.get("tags") or [],
+        "tags": tags,
         "url_status": data.get("url_status"),
         "date_added": data.get("date_added"),
         "note": None,

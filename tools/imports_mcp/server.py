@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,29 @@ FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 # Nothing is ever assumed to fit: the serialized size is re-checked after
 # every single step, list or string.
 MAX_RESPONSE_BYTES = 2000
-_TRIMMABLE_LIST_FIELDS = ("received_chain", "urls", "authentication_results", "attachments")
-_TRIMMABLE_STRING_FIELDS = ("subject", "date")
-_TRIMMABLE_ADDRESS_FIELDS = ("from", "reply_to", "return_path")
+_TRIMMABLE_LIST_FIELDS = ("received_chain", "urls", "attachments")
+_TRIMMABLE_STRING_FIELDS = (
+    "subject",
+    "date",
+    "authentication_results",
+    "from",
+    "reply_to",
+    "return_path",
+    "display_name",
+    "message_id",
+)
 _STRING_SHRINK_CHARS = 40
+
+# A hostname per RFC 1035: labels of 1-63 letters/digits/hyphens (no leading/
+# trailing hyphen), joined by dots, at least one dot. Rejects anything a
+# caller could use to redirect the RDAP/crt.sh request to a different path
+# or query (a bare "/", "?", "#", or whitespace can't appear in a valid
+# label at all) rather than trying to blocklist those characters directly.
+_DOMAIN_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
+MAX_DOMAIN_LENGTH = 253
 
 mcp = MCPServer("imports-mcp")
 
@@ -83,10 +103,12 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
     Adds `truncated` (bool) and, once true, `omitted` (per-field count of
     dropped list entries) — a caller can tell evidence was trimmed, and how
     much, rather than silently getting a partial result. List fields are
-    emptied first (received_chain/urls/authentication_results/attachments,
-    in that order); if that alone isn't enough, subject/date/address fields
-    are shortened next, character by character rather than dropped outright
-    — an oversized value is itself potential evidence, so it's kept in
+    emptied first (received_chain/urls/attachments, in that order); if that
+    alone isn't enough, the scalar string fields (subject/date/
+    authentication_results/from/reply_to/return_path/display_name/
+    message_id) are shortened next, character by character rather than
+    dropped outright —
+    an oversized value is itself potential evidence, so it's kept in
     truncated form instead of disappearing. The final serialized size is
     verified after every step, never assumed to fit.
     """
@@ -119,20 +141,6 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
         if fits():
             return capped
 
-    for field in _TRIMMABLE_ADDRESS_FIELDS:
-        original_address = capped.get(field)
-        if not isinstance(original_address, dict):
-            continue
-        address = dict(original_address)  # copy - never mutate the caller's result
-        capped[field] = address
-        for sub_field in ("display_name", "address"):
-            value = address.get(sub_field)
-            while isinstance(value, str) and value and not fits():
-                value = _shrink_string(value)
-                address[sub_field] = value
-            if fits():
-                return capped
-
     return capped
 
 
@@ -162,6 +170,11 @@ def domain_intel(domain: str) -> dict[str, Any]:
     domain = domain.strip()
     if not domain:
         raise ToolError("domain must not be empty")
+    if len(domain) > MAX_DOMAIN_LENGTH or not _DOMAIN_RE.match(domain):
+        # Rejects anything that isn't hostname syntax before it's ever used
+        # to build a URL - a caller-supplied "/", "?", "#" would otherwise
+        # change *which* RDAP path or crt.sh query actually gets requested.
+        raise ToolError(f"{domain!r} is not a valid domain name")
     return _domain_intel(domain)
 
 
