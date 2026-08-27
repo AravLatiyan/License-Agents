@@ -20,4 +20,9 @@ do
   echo "Seeded $(basename "$fixture")"
 done
 
+if [ "$count" -eq 0 ]; then
+  echo "Error: no Range fixture files found." >&2
+  exit 1
+fi
+
 echo "Seeded ${count} Range fixtures into Mailpit."
