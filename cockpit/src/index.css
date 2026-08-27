@@ -1,0 +1,57 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.cockpit {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+.cockpit__status {
+  opacity: 0.7;
+  margin-bottom: 24px;
+}
+
+.mission-view {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mission-event {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 6px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mission-event__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.mission-event__detail {
+  font-size: 0.95rem;
+}
+
+.mission-event--mission\.approval_required,
+.mission-event--mission\.approval_resolved {
+  border-color: color-mix(in srgb, orange 50%, transparent);
+}
+
+.mission-event--mission\.verdict {
+  border-color: color-mix(in srgb, crimson 50%, transparent);
+}
