@@ -95,6 +95,40 @@ def test_rdap_and_crtsh_success(mock_get):
 
 
 @patch("imports_mcp.domain_intel.requests.get")
+def test_flat_mirror_fields_satisfy_the_domain_intel_contract(mock_get):
+    """contracts/events.ts's DomainIntel (and Cockpit's isDomainIntel check)
+    requires domain/registration_date/registrar/abuse_contact/cert_issued_at
+    at the top level — the nested rdap/cert sections alone don't satisfy it
+    (Qodo PR #19 finding: "Domain evidence fails validation"). These mirrors
+    must equal the nested values that fed them, not just be present.
+    """
+    mock_get.side_effect = [_mock_response(200, RDAP_SUCCESS), _mock_response(200, CRTSH_SUCCESS)]
+    result = domain_intel("example.com")
+
+    assert set(("domain", "registration_date", "registrar", "abuse_contact", "cert_issued_at")) <= result.keys()
+    assert result["registration_date"] == result["rdap"]["registration_date"]
+    assert result["registrar"] == result["rdap"]["registrar"]
+    assert result["abuse_contact"] == result["rdap"]["abuse_contact"]
+    assert result["cert_issued_at"] == result["cert"]["earliest_seen"]
+    # Nested shape must survive unchanged — harness/agent.json's T-023/T-024
+    # instructions and this module's other tests still depend on it by name.
+    assert result["rdap"]["available"] is True
+    assert result["cert"]["available"] is True
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_flat_mirror_fields_are_null_when_rdap_has_no_data(mock_get):
+    data = {"events": [], "entities": []}
+    mock_get.side_effect = [_mock_response(200, data), _mock_response(200, [])]
+    result = domain_intel("redacted.example")
+
+    assert result["registration_date"] is None
+    assert result["registrar"] is None
+    assert result["abuse_contact"] is None
+    assert result["cert_issued_at"] is None
+
+
+@patch("imports_mcp.domain_intel.requests.get")
 def test_rdap_registration_date_not_published(mock_get):
     data = {"events": [], "entities": []}
     mock_get.side_effect = [_mock_response(200, data), _mock_response(502)]
@@ -293,6 +327,30 @@ def test_oversized_upstream_field_is_truncated_with_flag(mock_get):
 
     assert result["truncated"] is True
     assert len(result["rdap"]["registrar"]) < 5000
+    assert _response_size(result) <= MAX_RESPONSE_BYTES
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_flat_mirror_field_is_truncated_in_lockstep_with_its_nested_source(mock_get):
+    """The flat top-level `registrar` mirror must never carry the untruncated
+    5000-char string once rdap.registrar has been truncated — a stale mirror
+    would both blow the 2KB budget on its own and disagree with the nested
+    value it's supposed to equal.
+    """
+    bloated_rdap = {**RDAP_SUCCESS}
+    bloated_rdap["entities"] = [
+        {
+            "roles": ["registrar"],
+            "vcardArray": ["vcard", [["fn", {}, "text", "X" * 5000]]],
+        }
+    ]
+    mock_get.side_effect = [_mock_response(200, bloated_rdap), _mock_response(200, CRTSH_SUCCESS)]
+
+    result = domain_intel("example.com")
+
+    assert result["truncated"] is True
+    assert len(result["registrar"]) < 5000
+    assert result["registrar"] == result["rdap"]["registrar"]
     assert _response_size(result) <= MAX_RESPONSE_BYTES
 
 

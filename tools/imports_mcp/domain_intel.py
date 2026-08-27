@@ -226,6 +226,7 @@ def _cap_response_size(result: dict[str, Any]) -> dict[str, Any]:
             if field in section_data:
                 section_data[field] = _truncate_str(section_data[field], _MAX_FIELD_CHARS)
         capped[section] = section_data
+    _resync_flat_mirrors(capped)
     capped["truncated"] = True
 
     if len(json.dumps(capped).encode("utf-8")) > MAX_RESPONSE_BYTES:
@@ -239,8 +240,25 @@ def _cap_response_size(result: dict[str, Any]) -> dict[str, Any]:
                 if field in section_data:
                     section_data[field] = _truncate_str(section_data[field], 40)
             capped[section] = section_data
+        _resync_flat_mirrors(capped)
 
     return capped
+
+
+def _resync_flat_mirrors(capped: dict[str, Any]) -> None:
+    """Keep the top-level registration_date/registrar/abuse_contact/
+    cert_issued_at mirrors (see domain_intel()) equal to whatever the
+    rdap/cert sections hold *after* truncation - otherwise a truncated
+    nested value and an untruncated flat mirror of the same field could
+    disagree, and the flat mirror could itself carry the oversized string
+    that made truncation necessary in the first place.
+    """
+    rdap_section = capped.get("rdap") or {}
+    cert_section = capped.get("cert") or {}
+    capped["registration_date"] = rdap_section.get("registration_date")
+    capped["registrar"] = rdap_section.get("registrar")
+    capped["abuse_contact"] = rdap_section.get("abuse_contact")
+    capped["cert_issued_at"] = cert_section.get("earliest_seen")
 
 
 def domain_intel(domain: str) -> dict[str, Any]:
@@ -248,10 +266,29 @@ def domain_intel(domain: str) -> dict[str, Any]:
 
     Never raises because one source is down - each half degrades to
     available=False with a note instead.
+
+    Also mirrors registration_date/registrar/abuse_contact/cert_issued_at at
+    the top level, alongside the nested rdap/cert sections (kept as-is - this
+    module's own tests and harness/agent.json's T-023/T-024 instructions
+    already depend on that nested shape by name). The flat mirrors exist so
+    this satisfies contracts/events.ts's existing DomainIntel shape (Qodo PR
+    #19 finding: without them, every top-level field Cockpit's isDomainIntel
+    checks for is missing, so a live mission.evidence event carrying this
+    tool's real output throws in assertMissionEvent). Not a new schema -
+    the four field names and their source values both come straight from
+    the already-existing contract and the already-existing rdap/cert
+    lookups; cert_issued_at maps to cert.earliest_seen, the earliest
+    certificate-transparency issuance date this module already computes.
     """
+    rdap = _rdap_lookup(domain)
+    cert = _crtsh_lookup(domain)
     result = {
         "domain": domain,
-        "rdap": _rdap_lookup(domain),
-        "cert": _crtsh_lookup(domain),
+        "rdap": rdap,
+        "cert": cert,
+        "registration_date": rdap.get("registration_date"),
+        "registrar": rdap.get("registrar"),
+        "abuse_contact": rdap.get("abuse_contact"),
+        "cert_issued_at": cert.get("earliest_seen"),
     }
     return _cap_response_size(result)

@@ -1,117 +1,32 @@
 """End-to-end tests (T-012, T-020): real Streamable HTTP transport, real
-MCP client, and for domain_intel, real RDAP/crt.sh network calls too.
+MCP client — deterministic only, no live network calls.
 
 Spins tools/imports_mcp/server.py as a subprocess on a dedicated test port
 and connects with the official MCP client. This is what actually proves
-the T-004 transport decision (and the T-020 network wiring) works, not
-just that the underlying Python functions are correct - those are already
-covered without paying for a server in test_server_contract.py and
-test_domain_intel.py.
+the T-004 transport decision works, not just that the underlying Python
+functions are correct - those are already covered without paying for a
+server in test_server_contract.py and test_domain_intel.py.
+
+Live-network tests (real RDAP/crt.sh/URLhaus calls) live in
+test_server_integration_live.py instead, with their own separate server
+subprocess (see _server_fixtures.py) - PLAN.md §7 records a reproducible
+httpx.ReadTimeout on a *later* test sharing a subprocess with a real
+network call, so this file's always-on tests never share one with that.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import socket
-import subprocess
-import sys
-import time
-from pathlib import Path
+from tests._server_fixtures import call_tool, running_server
 
-import anyio
-import pytest
-from dotenv import load_dotenv
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-
-TOOLS_DIR = Path(__file__).resolve().parent.parent
-
-# Mirrors imports_mcp.url_reputation's own load_dotenv call, so this check
-# reflects whatever's actually configured (env var or .env), not just
-# whatever happens to already be exported in this shell.
-load_dotenv(TOOLS_DIR.parent / ".env")
-URLHAUS_AUTH_KEY_CONFIGURED = bool(os.environ.get("URLHAUS_AUTH_KEY"))
-
-# domain_intel has no auth key to gate on (RDAP/crt.sh are unauthenticated),
-# but its real network calls have reproducibly caused this suite's shared
-# module-scoped server subprocess to time out on a later test once a real
-# call has gone through it (PLAN.md §7) - opt in explicitly rather than
-# have every default `pytest` run (CI, a clean clone, a judge's machine)
-# depend on RDAP/crt.sh being fast and reachable right now.
-RUN_LIVE_DOMAIN_INTEL_TESTS = os.environ.get("RUN_LIVE_DOMAIN_INTEL_TESTS") == "1"
+__all__ = ["running_server"]  # re-exported so pytest can collect it as a fixture
 
 
-def _pick_free_port() -> int:
-    """Ask the OS for an unused port instead of hardcoding one — a fixed port
-    makes concurrent test runs (or an unrelated local service) flaky, per
-    Qodo's finding on this test."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-def _wait_for_server(proc: subprocess.Popen, port: int, timeout: float = 10.0) -> None:
-    """Poll for the port opening, but fail fast (with the captured output) if
-    the child process has already exited — a successful TCP connect alone
-    doesn't prove *our* server is what's listening, and waiting out the full
-    timeout on a dead child just makes failures slower to diagnose."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            output = proc.stdout.read() if proc.stdout else ""
-            raise RuntimeError(
-                f"imports-mcp server exited early (code {proc.returncode}) "
-                f"before opening port {port}:\n{output}"
-            )
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                return
-        except OSError:
-            time.sleep(0.1)
-    raise TimeoutError(f"imports-mcp server never opened port {port}")
-
-
-@pytest.fixture(scope="module")
-def running_server():
-    port = _pick_free_port()
-    server_url = f"http://127.0.0.1:{port}/mcp"
-    env = os.environ.copy()
-    env["IMPORTS_MCP_PORT"] = str(port)
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "imports_mcp.server"],
-        cwd=str(TOOLS_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    try:
-        _wait_for_server(proc, port)
-        yield server_url
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-
-
-async def _call_tool(url: str, name: str, arguments: dict):
-    async with streamable_http_client(url) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            result = await session.call_tool(name, arguments)
-            return tools, result
-
-
-async def _call_parse_message(url: str, fixture: str):
-    return await _call_tool(url, "parse_message", {"fixture": fixture})
+def _call_parse_message(url: str, fixture: str):
+    return call_tool(url, "parse_message", {"fixture": fixture})
 
 
 def test_parse_message_reachable_over_streamable_http(running_server):
-    tools, result = anyio.run(_call_parse_message, running_server, "03-legitimate.eml")
+    tools, result = _call_parse_message(running_server, "03-legitimate.eml")
 
     assert "parse_message" in [t.name for t in tools.tools]
     assert not result.is_error
@@ -120,64 +35,16 @@ def test_parse_message_reachable_over_streamable_http(running_server):
 
 
 def test_unknown_fixture_returns_error_over_the_wire(running_server):
-    _, result = anyio.run(_call_parse_message, running_server, "nope.eml")
+    _, result = _call_parse_message(running_server, "nope.eml")
     assert result.is_error
     assert "Unknown fixture" in result.content[0].text
 
 
-@pytest.mark.skipif(
-    not RUN_LIVE_DOMAIN_INTEL_TESTS,
-    reason="real RDAP/crt.sh calls through this suite's shared module-scoped server subprocess "
-    "have reproducibly caused a later test to hit httpx.ReadTimeout (PLAN.md §7) - opt in "
-    "explicitly with RUN_LIVE_DOMAIN_INTEL_TESTS=1; the deterministic behavior is already "
-    "covered by the mocked tests in test_domain_intel.py",
-)
-def test_domain_intel_reachable_over_streamable_http(running_server):
-    """Real RDAP/crt.sh calls, not mocked - proves the whole path is wired,
-    not just the HTTP transport. Deliberately asserts on structure only
-    (domain echoed back, both sections present), never on live content: a
-    volatile upstream value (registrar name, RDAP/crt.sh being reachable at
-    all) would make this test only as reliable as those services, exactly
-    the flakiness domain_intel's own graceful-degradation contract exists
-    to route around - is_error stays False either way, which is what this
-    test is actually here to prove."""
-    tools, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": "google.com"})
-
-    assert "domain_intel" in [t.name for t in tools.tools]
-    assert not result.is_error
-    payload = json.loads(result.content[0].text)
-    assert payload["domain"] == "google.com"
-    assert "available" in payload["rdap"]
-    assert "available" in payload["cert"]
-
-
 def test_domain_intel_empty_domain_returns_error_over_the_wire(running_server):
-    _, result = anyio.run(_call_tool, running_server, "domain_intel", {"domain": ""})
+    _, result = call_tool(running_server, "domain_intel", {"domain": ""})
     assert result.is_error
 
 
-@pytest.mark.skipif(
-    not URLHAUS_AUTH_KEY_CONFIGURED,
-    reason="requires URLHAUS_AUTH_KEY (env var or .env) for a live URLhaus call - "
-    "deterministic behavior is already covered by the mocked tests in test_url_reputation.py",
-)
-def test_url_reputation_reachable_over_streamable_http(running_server):
-    """Real URLhaus call, not mocked - gated on URLHAUS_AUTH_KEY so the
-    default suite (CI, a clean clone, a judge's machine without the secret)
-    never fails on a missing config. Structural assertion only: URLhaus's
-    verdict for this URL is external, mutable state (it could get listed
-    someday) - not something a test should pin an exact string to."""
-    tools, result = anyio.run(_call_tool, running_server, "url_reputation", {"url": "https://example.com/"})
-
-    assert "url_reputation" in [t.name for t in tools.tools]
-    assert not result.is_error
-    payload = json.loads(result.content[0].text)
-    assert payload["url"] == "https://example.com/"
-    assert isinstance(payload["available"], bool)
-    assert isinstance(payload["listed"], bool)
-    assert isinstance(payload["tags"], list)
-
-
 def test_url_reputation_empty_url_returns_error_over_the_wire(running_server):
-    _, result = anyio.run(_call_tool, running_server, "url_reputation", {"url": ""})
+    _, result = call_tool(running_server, "url_reputation", {"url": ""})
     assert result.is_error
