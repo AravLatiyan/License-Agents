@@ -59,5 +59,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = HTTPServer((HOST, PORT), Handler)
-    print(f"Fake portal running on http://localhost:{PORT}")
+    print(f"Fake portal listening on container port {PORT}")
     server.serve_forever()
