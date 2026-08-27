@@ -1,0 +1,33 @@
+{
+  "From": {
+    "Email": "billing@northgate-trust.example",
+    "Name": "Northgate Trust Billing"
+  },
+  "To": [
+    {
+      "Email": "finance@universal-imports.example",
+      "Name": "Universal Imports Finance"
+    }
+  ],
+  "Subject": "Invoice overdue — payment confirmation required",
+  "ReplyTo": [
+    {
+      "Email": "billing-confirm@northgate-trust-invoices.example",
+      "Name": "Northgate Trust Billing"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<billing@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=northgate-trust.example; dkim=pass; dmarc=fail header.from=northgate-trust.example",
+    "Received": "from billing.northgate-trust.example (203.0.113.100) by mx.universal-imports.example; Wed, 26 Aug 2026 16:10:00 +0000"
+  },
+  "Text": "Your invoice is overdue and requires immediate attention.\n\nPlease review the attached invoice and confirm the payment through http://localhost:8080/.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>Your invoice is overdue and requires immediate attention.</p><p>Please review the attached invoice and <a href=\"http://localhost:8080/\">confirm the payment</a>.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>",
+  "Attachments": [
+    {
+      "Filename": "invoice-2026-08-26.pdf",
+      "ContentType": "application/pdf",
+      "Content": "U3ludGhldGljIFVuaXZlcnNhbCBJbXBvcnRzIGZpeHR1cmUgaW52b2ljZS4="
+    }
+  ]
+}

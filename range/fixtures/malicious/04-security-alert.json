@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "security@northgate-trust.example",
+    "Name": "Northgate Trust Security"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Security alert — unusual sign-in detected",
+  "ReplyTo": [
+    {
+      "Email": "account-review@northgate-trust-secure.example",
+      "Name": "Northgate Trust Security"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<alerts@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=northgate-trust.example; dkim=fail; dmarc=fail header.from=northgate-trust.example",
+    "Received": "from alert.northgate-trust.example (203.0.113.40) by mx.universal-imports.example; Wed, 26 Aug 2026 11:45:00 +0000"
+  },
+  "Text": "We detected an unusual sign-in to your account.\n\nIf this was not you, verify your account immediately at http://localhost:8080/.\n\nFailure to verify may result in temporary account restrictions.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>We detected an unusual sign-in to your account.</p><p>If this was not you, <a href=\"http://localhost:8080/\">verify your account immediately</a>.</p><p>Failure to verify may result in temporary account restrictions.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}
