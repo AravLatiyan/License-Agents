@@ -1,0 +1,41 @@
+From: "Naitik Srivastava" <naitik.srivastava@universaI-imports.co>
+Reply-To: n.srivastava.finance@outlook-verify.net
+Return-Path: <bounce@universaI-imports.co>
+To: accounts@universal-imports.example
+Subject: URGENT - wire transfer needed before EOD
+Date: Sun, 23 Aug 2026 14:02:00 +0000
+Message-ID: <ceo-req-99231@universaI-imports.co>
+Authentication-Results: mx.universal-imports.example;
+    spf=pass smtp.mailfrom=universaI-imports.co;
+    dkim=pass header.d=universaI-imports.co;
+    dmarc=pass (p=none) header.from=universaI-imports.co
+Received: from mail.universaI-imports.co (mail.universaI-imports.co [45.142.212.61])
+    by mx.universal-imports.example with ESMTPS id 7c9d1e2f
+    for <accounts@universal-imports.example>; Sun, 23 Aug 2026 14:01:47 +0000
+Received: from webmail.universaI-imports.co (localhost [127.0.0.1])
+    by mail.universaI-imports.co; Sun, 23 Aug 2026 14:01:30 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BEC-BOUND"
+
+--BEC-BOUND
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hi,
+
+I'm in back-to-back board meetings today and can't take calls. We need to
+settle an outstanding invoice with our new logistics vendor before end of
+day or we lose the contract terms. Please process the attached invoice by
+wire immediately and confirm once sent. Use my personal address above for
+any questions, I won't have access to my usual inbox this afternoon.
+
+Thanks,
+Naitik
+
+--BEC-BOUND
+Content-Type: application/pdf; name="Vendor_Invoice_2201.pdf"
+Content-Disposition: attachment; filename="Vendor_Invoice_2201.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsdGhpcyBpcyBhIGZha2UgaW52b2ljZSBmaXh0dXJlIG9ubHkK
+--BEC-BOUND--
