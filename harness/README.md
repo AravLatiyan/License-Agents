@@ -47,12 +47,33 @@ tool set the root has, identical to root, with no restriction mechanism. So "IDE
 is a request we're making of the model, not a boundary the platform enforces — nothing stops an
 IDENTITY-labeled subagent from calling `domain_intel` if the model chooses to. Likewise "exactly
 three subagents" is what we're asking for, not a guarantee of what gets spawned.
-Structured (non-prose) evidence output is T-024's job, not this one — each subagent still just
-reports back in prose for now. **Written, not yet runtime-verified** — no local TrueForge instance
-was running this session, so none of the above (whether the root actually spawns three subagents
-matching these names/remits, or whether IDENTITY in practice stays tool-free) has been observed.
-The `instructions` field itself is the same accepted schema as T-013/T-017 (low risk there); the
-open question is the model's actual delegation *behavior*, not whether the JSON is accepted.
+**Structured evidence (T-024):** each subagent reports back to the lead as a small JSON object
+built from its own tool call's own field names (INFRASTRUCTURE: one object per tool it actually
+called — `domain_intel`/`url_reputation`/`detonate`'s own result fields, omitting a key entirely
+for a tool it didn't call; IDENTITY: `from_address`/`display_name`/`reply_to`/`return_path`/
+`lookalike_domain`/`lookalike_of`, computed from the parsed message, no tool call; HISTORY:
+`correspondence_history`'s own result fields, `domain` included) — never prose, and never an
+invented schema. "Own remit" is about judgment, not field names: a shared key name across two
+tools' own outputs (e.g. `domain_intel` and `correspondence_history` both happen to have a
+`domain` field) is never a reason to drop or rename either one — each stays exactly as its own
+tool returned it. IDENTITY's shape matches `contracts/events.ts`'s `IdentityEvidence` exactly
+(including the required `from_address` Qodo's PR #17 review caught missing from the first draft),
+since that type has no separate real producer to diverge from — it's derived straight from parsed-
+message fields, same as this prompt. INFRASTRUCTURE is deliberately **not** the same shape as the
+contract's `DomainIntel`/`UrlReputation` types, though, which don't match the real tool output
+(`domain_intel.py` nests under `rdap`/`cert`; `url_reputation.py` has `available`/`threat`/
+`url_status`/`date_added`/`truncated` that the contract omits) — flagged as a contract drift in
+PLAN.md §8 rather than fixed here, since `/contracts` needs 2 approvals and is out of this task's
+scope. The lead, not the subagents, turns that structured evidence into the final plain-English
+verdict. Same enforcement caveat as above: this is prompt guidance the model can diverge from,
+not a schema the platform validates.
+
+**Written, not yet runtime-verified** — no local TrueForge instance was running this session, so
+none of the above (whether the root actually spawns three subagents matching these names/remits,
+whether IDENTITY in practice stays tool-free, or whether reports actually come back as JSON instead
+of prose) has been observed. The `instructions` field itself is the same accepted schema as
+T-013/T-017 (low risk there); the open question is the model's actual delegation and reporting
+*behavior*, not whether the JSON is accepted.
 
 ## detonate.js
 
