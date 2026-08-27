@@ -1,0 +1,20 @@
+{
+  "From": {
+    "Email": "logistics@universal-imports.example",
+    "Name": "Universal Imports Logistics"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Shipment schedule update",
+  "Headers": {
+    "Return-Path": "<logistics@universal-imports.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=universal-imports.example; dkim=pass; dmarc=pass header.from=universal-imports.example",
+    "Received": "from mail.universal-imports.example (192.0.2.11) by mx.universal-imports.example; Wed, 26 Aug 2026 10:15:00 +0000"
+  },
+  "Text": "Hello,\n\nThe shipment scheduled for Friday has been moved to Monday morning due to the carrier timetable.\n\nThe warehouse team has been notified and no action is required from you.\n\nRegards,\nLogistics Team",
+  "HTML": "<html><body><p>Hello,</p><p>The shipment scheduled for Friday has been moved to Monday morning due to the carrier timetable.</p><p>The warehouse team has been notified and no action is required from you.</p><p>Regards,<br>Logistics Team</p></body></html>"
+}

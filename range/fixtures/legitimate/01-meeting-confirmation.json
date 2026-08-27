@@ -1,0 +1,20 @@
+{
+  "From": {
+    "Email": "operations@universal-imports.example",
+    "Name": "Universal Imports Operations"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Thursday operations meeting",
+  "Headers": {
+    "Return-Path": "<operations@universal-imports.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=universal-imports.example; dkim=pass; dmarc=pass header.from=universal-imports.example",
+    "Received": "from mail.universal-imports.example (192.0.2.10) by mx.universal-imports.example; Wed, 26 Aug 2026 09:00:00 +0000"
+  },
+  "Text": "Hi team,\n\nJust a reminder that our weekly operations meeting is scheduled for Thursday at 10:00.\n\nWe'll review current shipments, outstanding supplier questions, and next week's schedule.\n\nNo preparation is required.\n\nThanks,\nOperations Team",
+  "HTML": "<html><body><p>Hi team,</p><p>Just a reminder that our weekly operations meeting is scheduled for Thursday at 10:00.</p><p>We'll review current shipments, outstanding supplier questions, and next week's schedule.</p><p>No preparation is required.</p><p>Thanks,<br>Operations Team</p></body></html>"
+}

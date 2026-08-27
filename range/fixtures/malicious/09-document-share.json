@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "documents@northgate-trust.example",
+    "Name": "Northgate Trust Documents"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "A document has been shared with you",
+  "ReplyTo": [
+    {
+      "Email": "document-access@northgate-trust-files.example",
+      "Name": "Northgate Trust Documents"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<documents@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=northgate-trust.example; dkim=fail; dmarc=fail header.from=northgate-trust.example",
+    "Received": "from documents.northgate-trust.example (203.0.113.90) by mx.universal-imports.example; Wed, 26 Aug 2026 15:25:00 +0000"
+  },
+  "Text": "A confidential business document has been shared with you.\n\nThe document is available for review at http://localhost:8080/.\n\nYou must sign in to access the document.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>A confidential business document has been shared with you.</p><p><a href=\"http://localhost:8080/\">Review the shared document</a></p><p>You must sign in to access the document.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

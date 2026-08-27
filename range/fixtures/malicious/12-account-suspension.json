@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "account-services@meridian-courier.example",
+    "Name": "Meridian Courier Account Services"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Action required — account suspension notice",
+  "ReplyTo": [
+    {
+      "Email": "account-restore@meridian-courier-secure.example",
+      "Name": "Meridian Courier Account Services"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<account-services@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=meridian-courier.example; dkim=pass; dmarc=fail header.from=meridian-courier.example",
+    "Received": "from account.meridian-courier.example (198.51.100.120) by mx.universal-imports.example; Wed, 26 Aug 2026 17:20:00 +0000"
+  },
+  "Text": "Your business account is scheduled for suspension because required security information has not been confirmed.\n\nRestore access by completing verification at http://localhost:8080/.\n\nPlease complete the verification today.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>Your business account is scheduled for suspension because required security information has not been confirmed.</p><p><a href=\"http://localhost:8080/\">Restore account access</a></p><p>Please complete the verification today.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

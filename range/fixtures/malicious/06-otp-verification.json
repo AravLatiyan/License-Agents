@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "identity@northgate-trust.example",
+    "Name": "Northgate Trust Identity"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "MFA verification required",
+  "ReplyTo": [
+    {
+      "Email": "verify@northgate-trust-auth.example",
+      "Name": "Northgate Trust Identity"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<identity@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=northgate-trust.example; dkim=fail; dmarc=fail header.from=northgate-trust.example",
+    "Received": "from identity.northgate-trust.example (203.0.113.60) by mx.universal-imports.example; Wed, 26 Aug 2026 13:10:00 +0000"
+  },
+  "Text": "A new sign-in requires multi-factor verification.\n\nEnter your verification code at http://localhost:8080/ to keep your account active.\n\nDo not share this notification with anyone.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>A new sign-in requires multi-factor verification.</p><p>Enter your verification code at <a href=\"http://localhost:8080/\">the verification portal</a> to keep your account active.</p><p>Do not share this notification with anyone.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

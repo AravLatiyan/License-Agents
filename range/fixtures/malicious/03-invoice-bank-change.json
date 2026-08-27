@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "accounts@vendor-meridian.example",
+    "Name": "Meridian Courier Accounts"
+  },
+  "To": [
+    {
+      "Email": "finance@universal-imports.example",
+      "Name": "Universal Imports Finance"
+    }
+  ],
+  "Subject": "Updated invoice and bank details",
+  "ReplyTo": [
+    {
+      "Email": "accounts-payments@meridian-courier-billing.example",
+      "Name": "Meridian Courier Accounts"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<billing@vendor-meridian.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=vendor-meridian.example; dkim=pass; dmarc=pass header.from=vendor-meridian.example",
+    "Received": "from mail.vendor-meridian.example (198.51.100.30) by mx.universal-imports.example; Wed, 26 Aug 2026 10:30:00 +0000"
+  },
+  "Text": "Please find the updated invoice attached.\n\nOur banking details have changed. Please use the new account information for this payment.\n\nReview the updated payment instructions: http://localhost:8080/\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>Please find the updated invoice attached.</p><p><strong>Our banking details have changed.</strong> Please use the new account information for this payment.</p><p><a href=\"http://localhost:8080/\">Review updated payment instructions</a></p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}
