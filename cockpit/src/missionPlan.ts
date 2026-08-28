@@ -118,6 +118,57 @@ function stageStatus(stageIndex: number, currentIndex: number, missionDone: bool
   return "pending";
 }
 
+function currentStageIndex(events: MissionEvent[]): number {
+  const seenStages = new Set(events.map(stageOf));
+  let index = -1;
+  STAGE_ORDER.forEach((stage, i) => {
+    if (seenStages.has(stage)) index = i;
+  });
+  return index;
+}
+
+export interface EvidenceLaneState {
+  lane: EvidenceLane;
+  label: string;
+  status: StageStatus;
+  items: Extract<MissionEvent, { type: "mission.evidence" }>[];
+}
+
+/**
+ * The three evidence lanes on their own, with full typed evidence items
+ * (not the plan tree's collapsed one-line join) - what T-052's dedicated
+ * lane panels render. Status derivation is shared with buildMissionPlan
+ * (both call this) so the tree and the lane panels can never disagree
+ * about whether a lane is pending/active/done.
+ */
+export function buildEvidenceLanes(events: MissionEvent[]): EvidenceLaneState[] {
+  const missionDone = events.some((e) => e.type === "mission.complete");
+  const currentIndex = currentStageIndex(events);
+  const evidenceStageIndex = STAGE_ORDER.indexOf("evidence");
+
+  const byLane = new Map<EvidenceLane, Extract<MissionEvent, { type: "mission.evidence" }>[]>();
+  for (const e of events) {
+    if (e.type === "mission.evidence") {
+      const list = byLane.get(e.lane) ?? [];
+      list.push(e);
+      byLane.set(e.lane, list);
+    }
+  }
+
+  return EVIDENCE_LANES.map((lane) => {
+    const items = byLane.get(lane) ?? [];
+    // Stage advancement/mission completion is checked first, not item
+    // count: a lane the stream moves past (or the mission finishes)
+    // without ever reporting is done - it isn't still "pending" just
+    // because it happens to be empty (Qodo, PR #36 finding #1). Only
+    // while evidence is still the current stage does an empty lane mean
+    // "hasn't reported yet" rather than "reported nothing."
+    const status: StageStatus =
+      currentIndex > evidenceStageIndex || missionDone ? "done" : items.length === 0 ? "pending" : "active";
+    return { lane, label: LANE_LABEL[lane], status, items };
+  });
+}
+
 interface GateState {
   action?: string;
   resolved?: "allow" | "deny";
@@ -128,11 +179,7 @@ interface GateState {
 
 export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   const missionDone = events.some((e) => e.type === "mission.complete");
-  const seenStages = new Set(events.map(stageOf));
-  let currentIndex = -1;
-  STAGE_ORDER.forEach((stage, i) => {
-    if (seenStages.has(stage)) currentIndex = i;
-  });
+  const currentIndex = currentStageIndex(events);
   const indexOf = (stage: StageId) => STAGE_ORDER.indexOf(stage);
 
   // --- message -----------------------------------------------------------
@@ -146,41 +193,26 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     detail: messageEvent ? describeEvent(messageEvent) : null,
   };
 
-  // --- evidence: 3 fixed lanes, populated by whatever evidence arrived ---
-  const evidenceByLane = new Map<EvidenceLane, Extract<MissionEvent, { type: "mission.evidence" }>[]>();
-  for (const e of events) {
-    if (e.type === "mission.evidence") {
-      const list = evidenceByLane.get(e.lane) ?? [];
-      list.push(e);
-      evidenceByLane.set(e.lane, list);
-    }
-  }
-  const evidenceStageIndex = indexOf("evidence");
-  const laneChildren: PlanNode[] = EVIDENCE_LANES.map((lane) => {
-    const laneEvents = evidenceByLane.get(lane) ?? [];
-    const hasEvents = laneEvents.length > 0;
-    const status: StageStatus = !hasEvents
-      ? "pending"
-      : currentIndex > evidenceStageIndex || missionDone
-        ? "done"
-        : "active";
-    return {
-      id: `evidence:${lane}`,
-      label: LANE_LABEL[lane],
-      status,
-      detail: hasEvents ? laneEvents.map(describeEvent).join("; ") : null,
-    };
-  });
+  // --- evidence: collapsed from the same per-lane state buildEvidenceLanes
+  // exposes in full, so the tree and T-052's lane panels can't disagree ---
+  const laneChildren: PlanNode[] = buildEvidenceLanes(events).map(({ lane, label, status, items }) => ({
+    id: `evidence:${lane}`,
+    label,
+    status,
+    detail: items.length > 0 ? items.map(describeEvent).join("; ") : null,
+  }));
   const evidenceNode: PlanNode = {
     id: "evidence",
     label: STAGE_LABEL.evidence,
-    status: stageStatus(evidenceStageIndex, currentIndex, missionDone),
+    status: stageStatus(indexOf("evidence"), currentIndex, missionDone),
     detail: null,
     children: laneChildren,
   };
 
   // --- detonation / verdict: single events --------------------------------
-  const detonationEvent = events.find(
+  // findLast: a retried/re-emitted detonation is a later, more current
+  // result, not a duplicate to ignore (Qodo, PR #41 finding #1, DetonationPanel.tsx).
+  const detonationEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.detonation" }> => e.type === "mission.detonation",
   );
   const detonationNode: PlanNode = {
@@ -190,7 +222,9 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     detail: detonationEvent ? describeEvent(detonationEvent) : null,
   };
 
-  const verdictEvent = events.find(
+  // findLast: a re-emitted verdict is the current judgment, not a
+  // duplicate (§7, same class as T-053's detonationEvent fix).
+  const verdictEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.verdict" }> => e.type === "mission.verdict",
   );
   const verdictNode: PlanNode = {
