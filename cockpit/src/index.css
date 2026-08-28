@@ -114,3 +114,79 @@ body {
   font-weight: 600;
   color: crimson;
 }
+
+/* Evidence lanes (T-052) — the three subagents side by side, §17's
+   "three evidence lanes light up in parallel" beat. Same pending/active/
+   done language as the plan tree, reused via the shared status classes. */
+.evidence-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+
+@media (max-width: 640px) {
+  .evidence-lanes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.evidence-lane {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.evidence-lane__header h3 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.evidence-lane__empty {
+  margin: 0;
+  opacity: 0.6;
+  font-size: 0.9rem;
+}
+
+.evidence-lane__items {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.evidence-item {
+  font-size: 0.9rem;
+}
+
+.evidence-item__title {
+  margin: 0 0 4px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.evidence-item dt {
+  opacity: 0.6;
+  font-size: 0.75rem;
+  margin-top: 4px;
+}
+
+.evidence-item dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.evidence-lane--pending {
+  opacity: 0.45;
+}
+
+.evidence-lane--active {
+  border-color: orange;
+}
+
+.evidence-lane--done {
+  border-color: color-mix(in srgb, seagreen 60%, transparent);
+}
