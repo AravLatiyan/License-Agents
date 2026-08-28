@@ -40,6 +40,13 @@ of `["@write", "@destructive"]` — that's deliberate: it gates exactly these fo
 `parse_message`/`domain_intel`/`url_reputation` ungated regardless of how they're annotated,
 matching §10's tool table. `enable_tools` is left at its `["@all"]` default.
 
+**The prompt must not pre-empt the gate.** `instructions` used to end "propose the action and
+wait, never assume consent" — correct while `mcp_servers` was empty and prompt-level restraint was
+the only safety, but actively wrong now: the harness pauses *on the tool call*, so an agent that
+stops to ask in chat first never emits the call and the native gate never fires. Caught by Qodo on
+this PR. The wording now tells the model to call the gated tool directly and let the harness stop
+it, and adds that a denial is final and must not be routed around via another tool.
+
 **None of the four gated tools exist yet** — they're T-030–T-033 (O2), and
 `tools/imports_mcp/server.py` currently serves only `parse_message`, `domain_intel`, and
 `url_reputation`. Gating a not-yet-existing tool is schema-valid and was verified live (below),
