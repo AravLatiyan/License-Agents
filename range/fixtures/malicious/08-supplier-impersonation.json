@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "procurement@meridian-courier.example",
+    "Name": "Meridian Courier Procurement"
+  },
+  "To": [
+    {
+      "Email": "finance@universal-imports.example",
+      "Name": "Universal Imports Finance"
+    }
+  ],
+  "Subject": "Urgent supplier account confirmation",
+  "ReplyTo": [
+    {
+      "Email": "procurement-confirm@meridian-courier-supplier.example",
+      "Name": "Meridian Courier Procurement"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<procurement@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=fail smtp.mailfrom=meridian-courier.example; dkim=pass; dmarc=fail header.from=meridian-courier.example",
+    "Received": "from procurement.meridian-courier.example (198.51.100.80) by mx.universal-imports.example; Wed, 26 Aug 2026 14:40:00 +0000"
+  },
+  "Text": "We are updating our supplier records and need you to confirm your account information today.\n\nOpen the supplier verification portal: http://localhost:8080/\n\nPlease complete this before the next payment cycle.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>We are updating our supplier records and need you to confirm your account information today.</p><p><a href=\"http://localhost:8080/\">Open the supplier verification portal</a></p><p>Please complete this before the next payment cycle.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

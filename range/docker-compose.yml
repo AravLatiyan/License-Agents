@@ -1,0 +1,14 @@
+services:
+  mailpit:
+    image: axllent/mailpit:v1.31.0@sha256:c96991d9bef73594c246d89ca81411d4e916f03e76a7d2d72fa2ab5dd3c9ce24
+    container_name: universal-imports-mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  fake-portal:
+    build:
+      context: ./fake-portal
+    container_name: universal-imports-fake-portal
+    expose:
+      - "8080"

@@ -1,0 +1,20 @@
+{
+  "From": {
+    "Email": "projects@universal-imports.example",
+    "Name": "Universal Imports Project Team"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Project planning notes for next week",
+  "Headers": {
+    "Return-Path": "<projects@universal-imports.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=universal-imports.example; dkim=pass; dmarc=pass header.from=universal-imports.example",
+    "Received": "from mail.universal-imports.example (192.0.2.14) by mx.universal-imports.example; Wed, 26 Aug 2026 14:30:00 +0000"
+  },
+  "Text": "Hi team,\n\nI've added the agenda for next week's project planning session to our internal notes.\n\nWe'll review the current milestones, open questions, and work planned for the following sprint.\n\nSee you Monday,\nProject Team",
+  "HTML": "<html><body><p>Hi team,</p><p>I've added the agenda for next week's project planning session to our internal notes.</p><p>We'll review the current milestones, open questions, and work planned for the following sprint.</p><p>See you Monday,<br>Project Team</p></body></html>"
+}

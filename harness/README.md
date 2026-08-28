@@ -59,12 +59,13 @@ tools' own outputs (e.g. `domain_intel` and `correspondence_history` both happen
 tool returned it. IDENTITY's shape matches `contracts/events.ts`'s `IdentityEvidence` exactly
 (including the required `from_address` Qodo's PR #17 review caught missing from the first draft),
 since that type has no separate real producer to diverge from — it's derived straight from parsed-
-message fields, same as this prompt. INFRASTRUCTURE is deliberately **not** the same shape as the
-contract's `DomainIntel`/`UrlReputation` types, though, which don't match the real tool output
-(`domain_intel.py` nests under `rdap`/`cert`; `url_reputation.py` has `available`/`threat`/
-`url_status`/`date_added`/`truncated` that the contract omits) — flagged as a contract drift in
-PLAN.md §8 rather than fixed here, since `/contracts` needs 2 approvals and is out of this task's
-scope. The lead, not the subagents, turns that structured evidence into the final plain-English
+message fields, same as this prompt. INFRASTRUCTURE reports `domain_intel`/`url_reputation`'s own
+result fields verbatim, nested `rdap`/`cert` sections included — `domain_intel.py` also carries flat
+top-level `registration_date`/`registrar`/`abuse_contact`/`cert_issued_at` mirrors of those same
+values (added in `tools/`'s PR #19 second Qodo-fix pass, commit `3f169b3`) specifically so its real
+output satisfies `contracts/events.ts`'s `DomainIntel` shape; `url_reputation.py`'s own fields
+already did. The earlier contract-drift note (PLAN.md §8, 2026-08-27) is resolved. The lead, not
+the subagents, turns that structured evidence into the final plain-English
 verdict. Same enforcement caveat as above: this is prompt guidance the model can diverge from,
 not a schema the platform validates.
 

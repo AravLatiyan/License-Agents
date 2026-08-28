@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "director@northgate-trust.example",
+    "Name": "Sophie Bennett"
+  },
+  "To": [
+    {
+      "Email": "finance@universal-imports.example",
+      "Name": "Universal Imports Finance"
+    }
+  ],
+  "Subject": "Need this handled before the next meeting",
+  "ReplyTo": [
+    {
+      "Email": "sophie.bennett-office@northgate-trust-executive.example",
+      "Name": "Sophie Bennett"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<director@northgate-trust.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=northgate-trust.example; dkim=pass; dmarc=pass header.from=northgate-trust.example",
+    "Received": "from executive.northgate-trust.example (203.0.113.110) by mx.universal-imports.example; Wed, 26 Aug 2026 16:45:00 +0000"
+  },
+  "Text": "I need you to take care of an urgent supplier payment before the next meeting.\n\nPlease use the secure verification portal at http://localhost:8080/ and confirm once it is complete.\n\nPlease keep this request confidential until the meeting.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>I need you to take care of an urgent supplier payment before the next meeting.</p><p>Please use the <a href=\"http://localhost:8080/\">secure verification portal</a> and confirm once it is complete.</p><p>Please keep this request confidential until the meeting.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

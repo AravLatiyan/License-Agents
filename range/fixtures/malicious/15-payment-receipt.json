@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "receipts@meridian-courier.example",
+    "Name": "Meridian Courier Receipts"
+  },
+  "To": [
+    {
+      "Email": "finance@universal-imports.example",
+      "Name": "Universal Imports Finance"
+    }
+  ],
+  "Subject": "Payment receipt — action required",
+  "ReplyTo": [
+    {
+      "Email": "receipt-review@meridian-courier-payments.example",
+      "Name": "Meridian Courier Receipts"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<receipts@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=meridian-courier.example; dkim=fail; dmarc=fail header.from=meridian-courier.example",
+    "Received": "from receipts.meridian-courier.example (198.51.100.150) by mx.universal-imports.example; Wed, 26 Aug 2026 19:10:00 +0000"
+  },
+  "Text": "A payment receipt is ready for your recent business transaction.\n\nReview the receipt and confirm the transaction details at http://localhost:8080/.\n\nIf you do not recognize this payment, verify your account immediately.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>A payment receipt is ready for your recent business transaction.</p><p><a href=\"http://localhost:8080/\">Review the receipt and confirm transaction details</a>.</p><p>If you do not recognize this payment, verify your account immediately.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}

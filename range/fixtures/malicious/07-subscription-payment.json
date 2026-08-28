@@ -1,0 +1,26 @@
+{
+  "From": {
+    "Email": "billing@meridian-courier.example",
+    "Name": "Meridian Courier Billing"
+  },
+  "To": [
+    {
+      "Email": "employee@universal-imports.example",
+      "Name": "Universal Imports"
+    }
+  ],
+  "Subject": "Payment failed — update billing information",
+  "ReplyTo": [
+    {
+      "Email": "billing-update@meridian-courier-billing.example",
+      "Name": "Meridian Courier Billing"
+    }
+  ],
+  "Headers": {
+    "Return-Path": "<billing@meridian-courier.example>",
+    "Authentication-Results": "mx.universal-imports.example; spf=pass smtp.mailfrom=meridian-courier.example; dkim=pass; dmarc=pass header.from=meridian-courier.example",
+    "Received": "from billing.meridian-courier.example (198.51.100.70) by mx.universal-imports.example; Wed, 26 Aug 2026 14:00:00 +0000"
+  },
+  "Text": "Your scheduled subscription payment could not be processed.\n\nTo prevent service interruption, update your billing information at http://localhost:8080/.\n\nPlease complete the update today.\n\nThis is a synthetic Universal Imports Range fixture.",
+  "HTML": "<html><body><p>Your scheduled subscription payment could not be processed.</p><p>To prevent service interruption, <a href=\"http://localhost:8080/\">update your billing information</a>.</p><p>Please complete the update today.</p><p>This is a synthetic Universal Imports Range fixture.</p></body></html>"
+}
