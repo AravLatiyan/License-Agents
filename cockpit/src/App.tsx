@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import missionHappyPath from "../../contracts/fixtures/mission-happy-path.json";
+import { DetonationPanel } from "./DetonationPanel";
+import { EvidenceLanes } from "./EvidenceLanes";
 import { MissionView } from "./MissionView";
 import { fixtureEventSource } from "./missionSource";
 import { useMissionEvents } from "./useMissionEvents";
@@ -22,6 +24,8 @@ function App() {
         {status === "complete" && `Mission complete — ${events.length} events`}
         {status === "error" && `Error: ${error}`}
       </p>
+      <EvidenceLanes events={events} />
+      <DetonationPanel events={events} />
       <MissionView events={events} />
     </main>
   );
