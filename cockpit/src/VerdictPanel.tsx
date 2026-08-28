@@ -8,10 +8,11 @@ const VERDICT_TEXT: Record<VerdictLabel, string> = {
 
 /**
  * T-054: the verdict panel - plain English, <=4 sentences, no jargon (§17,
- * 1:25-1:50). The sentence-count/plain-language constraint is on whoever
- * writes `summary` (the harness prompt, T-024's remit) - this panel's job
- * is to render it prominently and clearly, the mission's one moment of
- * plain-language judgment before the licence gates fire.
+ * 2:40-3:00: "Plain English, spoken: 'This is fake...'" - 1:25-1:50 is the
+ * evidence recap, not this). The sentence-count/plain-language constraint
+ * is on whoever writes `summary` (the harness prompt, T-024's remit) - this
+ * panel's job is to render it prominently and clearly, the mission's one
+ * moment of plain-language judgment before the licence gates fire.
  */
 export function VerdictPanel({ events }: { events: MissionEvent[] }) {
   // findLast, not find: a re-emitted verdict is the current judgment, not
