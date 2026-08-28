@@ -8,6 +8,11 @@ function PlanNodeItem({ node }: { node: PlanNode }) {
   return (
     <li className={`plan-node plan-node--${node.status}`}>
       <span className="plan-node__status" aria-hidden="true" />
+      {/* Status is otherwise conveyed only by color/opacity on the dot
+          above, which is aria-hidden - screen-reader and forced-colors
+          users need the word itself (Qodo, PR #32 finding #3), especially
+          on parent nodes (evidence/gates) that have no detail text. */}
+      <span className="sr-only">{node.status}: </span>
       <span className="plan-node__label">{node.label}</span>
       {node.detail && <span className="plan-node__detail">{node.detail}</span>}
       {node.children && (

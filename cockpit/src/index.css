@@ -18,6 +18,21 @@ body {
   margin-bottom: 24px;
 }
 
+/* Visually hidden but still reachable by assistive tech - standard pattern,
+   not `display: none`/`visibility: hidden` (those remove it from the
+   accessibility tree too). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Mission view — the plan tree (T-051). One top-level <li> per §10 stage;
    each stage's own children (evidence lanes, licence gates) are a nested
    <ol> of the same node markup, one level indented. */
