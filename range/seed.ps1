@@ -6,7 +6,11 @@ $MailpitUrl = if ($env:MAILPIT_URL) {
     "http://localhost:8025"
 }
 
-$FixturesDir = Join-Path $PSScriptRoot "fixtures"
+$FixturesDir = if ($env:FIXTURES_DIR) {
+    $env:FIXTURES_DIR
+} else {
+    Join-Path $PSScriptRoot "fixtures"
+}
 
 $fixtures = @(
     Get-ChildItem (Join-Path $FixturesDir "malicious") -Filter "*.json" |
