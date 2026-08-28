@@ -94,6 +94,62 @@ def test_non_numeric_port_falls_back_to_the_range_port(mock_smtp, monkeypatch):
     assert mock_smtp.call_args[0][1] == DEFAULT_SMTP_PORT
 
 
+# --- regressions for Qodo's PR #29 findings #1 and #2 ----------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_blank_smtp_host_falls_back_to_the_range(mock_smtp, monkeypatch, blank):
+    """Regression, Qodo PR #29 finding #1. `.env.example` ships `SMTP_HOST=`,
+    which python-dotenv loads as a set-but-empty "" — and `os.environ.get(k,
+    default)` returns that as-is rather than defaulting. `smtplib.SMTP` only
+    connects `if host:`, so a blank host silently made every notification a
+    no-op. Anyone following the documented setup path got a tool that never
+    delivered. Set-but-empty is tested here, NOT deleted: the original
+    fixture deleted the var, which is why the bug survived review."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", blank)
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert mock_smtp.call_args[0][0] == DEFAULT_SMTP_HOST
+    assert result["smtp_host"] == DEFAULT_SMTP_HOST
+
+
+@pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "not-a-port", "  "])
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_unusable_port_never_reaches_smtplib(mock_smtp, monkeypatch, bad_port):
+    """Regression, Qodo PR #29 finding #2. `smtplib.SMTP.connect` does
+    `if not port: port = self.default_port`, and `default_port` is 25 — the
+    real outbound MX port. So `SMTP_PORT=0` escaped the 1025 Mailpit default
+    entirely. Out-of-range values are now rejected too, not merely parsed."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_PORT", bad_port)
+
+    notify_impersonated(ADDRESS, EVIDENCE)
+
+    used_port = mock_smtp.call_args[0][1]
+    assert used_port == DEFAULT_SMTP_PORT
+    assert used_port != 25, "must never fall through to smtplib's default SMTP port"
+    assert used_port != 0, "port 0 is what makes smtplib choose 25"
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_failure_result_reports_the_host_actually_used_not_the_raw_env(mock_smtp, monkeypatch):
+    """The failure path used to re-read SMTP_HOST instead of the resolved
+    target, so a blank var would report "" as the host it dialled — a host it
+    never dialled. Reporting must match what was actually attempted."""
+    monkeypatch.setenv("SMTP_HOST", "")
+    mock_smtp.side_effect = ConnectionRefusedError("refused")
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["sent"] is False
+    assert result["smtp_host"] == DEFAULT_SMTP_HOST
+
+
 # --- the happy path --------------------------------------------------------
 
 
@@ -210,6 +266,37 @@ def test_oversized_evidence_is_truncated_and_flagged(mock_smtp):
 @patch("imports_mcp.notify_impersonated.smtplib.SMTP")
 def test_oversized_failure_note_is_truncated_and_flagged(mock_smtp):
     mock_smtp.side_effect = ConnectionRefusedError("x" * 10_000)
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["truncated"] is True
+    assert result["sent"] is False
+    assert len(json.dumps(result).encode("utf-8")) <= MAX_RESPONSE_BYTES
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_oversized_smtp_host_is_truncated_and_flagged(mock_smtp, monkeypatch):
+    """Regression, Qodo PR #29 finding #3. `smtp_host` is environment-
+    controlled and appears in both the success and failure responses, but was
+    missing from the trim list — so a long SMTP_HOST returned ~9KB while
+    still reporting truncated: True, i.e. claiming a cap it hadn't applied.
+    Same omission url_reputation had on PR #19."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "h" * 10_000)
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["truncated"] is True
+    assert len(json.dumps(result).encode("utf-8")) <= MAX_RESPONSE_BYTES
+    assert len(result["smtp_host"]) < 10_000
+    assert result["sent"] is True  # structured fields survive truncation
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_oversized_smtp_host_on_the_failure_path_is_also_capped(mock_smtp, monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "h" * 10_000)
+    mock_smtp.side_effect = ConnectionRefusedError("refused")
 
     result = notify_impersonated(ADDRESS, EVIDENCE)
 

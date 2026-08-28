@@ -60,7 +60,12 @@ MAX_ADDRESS_LENGTH = 254  # RFC 5321 §4.5.3.1.3
 # `note` and `evidence` are the unbounded fields here — `note` can carry an
 # smtplib exception message, `evidence` is caller/model-supplied.
 MAX_RESPONSE_BYTES = 2000
-_TRIMMABLE_STRING_FIELDS = ("note", "evidence", "address")
+# Every caller- or environment-controlled scalar, not a hand-picked subset:
+# `smtp_host` comes from SMTP_HOST and is as unbounded as the rest, so
+# leaving it out let a long host blow the cap while still reporting
+# truncated: True (Qodo, PR #29). Same omission url_reputation had on
+# PR #19 — the rule covers the whole serialized response.
+_TRIMMABLE_STRING_FIELDS = ("note", "evidence", "address", "smtp_host")
 
 
 def _serialized_size(payload: dict[str, Any]) -> int:
@@ -109,29 +114,56 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
     return capped
 
 
-def _failed(address: str, evidence: str, note: str) -> dict[str, Any]:
+def _failed(address: str, evidence: str, host: str, note: str) -> dict[str, Any]:
     """Degrade the same way every other imports-mcp tool does: a structured
     `sent: False` plus a note, never an exception. The gate has already been
     granted by a human at this point, so a transport failure is information
-    the mission needs back — not a crash that loses the whole turn."""
+    the mission needs back — not a crash that loses the whole turn.
+
+    Takes the already-resolved `host` rather than re-reading SMTP_HOST: the
+    env var can be blank or whitespace (see `_smtp_target`), so re-reading it
+    here would report a host the tool never actually dialled.
+    """
     return {
         "address": address,
         "evidence": evidence,
         "sent": False,
         "available": False,
-        "smtp_host": os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST),
+        "smtp_host": host,
         "note": note,
     }
 
 
 def _smtp_target() -> tuple[str, int]:
     """Resolve host/port at call time, not import time, so a test (or a
-    deployment) can set them without re-importing the module."""
-    host = os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST)
-    raw_port = os.environ.get("SMTP_PORT", "")
+    deployment) can set them without re-importing the module.
+
+    Both halves fall back to the Range on *any* unusable value, not just a
+    missing one. Two ways that mattered, both found by Qodo on PR #29:
+
+    - A blank host. `.env.example` ships `SMTP_HOST=` (so the key is
+      documented), and python-dotenv loads that as `""` — a set-but-empty
+      value, which `os.environ.get(k, default)` returns as-is rather than
+      defaulting. `smtplib.SMTP` only connects `if host:`, so `""` silently
+      turned every notification into a no-op with `sent: False`. Anyone
+      copying `.env.example` — the documented setup path — got a tool that
+      never delivered.
+
+    - A port of 0 (or out of range). `smtplib.SMTP.connect` does
+      `if not port: port = self.default_port`, and `default_port` is **25**
+      — the real outbound MX port. So `SMTP_PORT=0` quietly escaped the
+      1025 Mailpit default. Ports are now range-checked, not merely parsed:
+      0, negatives, and anything above 65535 fall back to the Range.
+    """
+    host = os.environ.get("SMTP_HOST", "").strip() or DEFAULT_SMTP_HOST
+
+    raw_port = os.environ.get("SMTP_PORT", "").strip()
     try:
         port = int(raw_port) if raw_port else DEFAULT_SMTP_PORT
     except ValueError:
+        port = DEFAULT_SMTP_PORT
+    if not 1 <= port <= 65535:
+        # Never hand smtplib a falsy or nonsensical port — see above.
         port = DEFAULT_SMTP_PORT
     return host, port
 
@@ -176,7 +208,7 @@ def notify_impersonated(address: str, evidence: str) -> dict[str, Any]:
         # protocol-level rejections. Either way the mission gets a result,
         # not a lost turn.
         return _cap_response(
-            _failed(address, evidence, f"SMTP send failed via {host}:{port}: {exc}")
+            _failed(address, evidence, host, f"SMTP send failed via {host}:{port}: {exc}")
         )
 
     return _cap_response(
