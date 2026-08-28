@@ -17,8 +17,8 @@ curl -X POST http://localhost:8790/api/v1/agents \
   -d @harness/agent.json
 ```
 
-`mcp_servers` is empty for now — `tools/imports-mcp` (T-012) doesn't exist yet. Once it does,
-add an entry here:
+`mcp_servers` (T-034) points at the `imports-mcp` connector and marks four tools
+approval-required:
 
 ```json
 {
@@ -33,7 +33,40 @@ add an entry here:
 ```
 
 Those four names are the **four sequential licence gates** (§10, §17) — everything else on the
-MCP server stays ungated.
+MCP server stays ungated. `name` refers to a connector registered separately in TrueForge
+(Settings → Connectors, `POST /api/v1/settings/mcp-servers`); this manifest only references it by
+name, it does not carry the URL. Naming the four gates explicitly **replaces** the field's default
+of `["@write", "@destructive"]` — that's deliberate: it gates exactly these four and leaves
+`parse_message`/`domain_intel`/`url_reputation` ungated regardless of how they're annotated,
+matching §10's tool table. `enable_tools` is left at its `["@all"]` default.
+
+**The prompt must not pre-empt the gate.** `instructions` used to end "propose the action and
+wait, never assume consent" — correct while `mcp_servers` was empty and prompt-level restraint was
+the only safety, but actively wrong now: the harness pauses *on the tool call*, so an agent that
+stops to ask in chat first never emits the call and the native gate never fires. Caught by Qodo on
+this PR. The wording now tells the model to call the gated tool directly and let the harness stop
+it, and adds that a denial is final and must not be routed around via another tool.
+
+**None of the four gated tools exist yet** — they're T-030–T-033 (O2), and
+`tools/imports_mcp/server.py` currently serves only `parse_message`, `domain_intel`, and
+`url_reputation`. Gating a not-yet-existing tool is schema-valid and was verified live (below),
+but the gates cannot actually *fire* until those four tools ship.
+
+**Live-verified for T-034** against a real TrueForge instance (WSL2), with the real
+`imports-mcp` server registered as a throwaway connector:
+- registration returned `201`, and `GET /api/v1/mcp-servers/{name}/tools` listed exactly
+  `parse_message`, `domain_intel`, `url_reputation` — confirming the four gate targets are
+  genuinely absent;
+- a throwaway agent carrying this exact `require_approval_for_tools` list was **not** rejected for
+  naming nonexistent tools — it reached the expected `422 "provider not configured"` (the §5
+  live-fire blocker);
+- two deliberate controls *were* rejected at `400` with precise schema errors
+  (`manifest.mcp_servers[0].require_approval_for_tools[0]` for an empty name,
+  `manifest.mcp_servers[0].name` for a missing name), proving manifest validation really does run
+  and really would have caught a malformed gate list.
+
+So the configuration is proven accepted; **an actual `tool.approval_required` event has not been
+observed** and cannot be until T-030–T-033 exist *and* a model provider is configured (§5).
 
 `instructions` (T-023) **asks** the root agent to delegate to three named subagents — INFRASTRUCTURE
 (`domain_intel`, `url_reputation`, `detonate`), IDENTITY (display-name vs. Reply-To/Return-Path and
