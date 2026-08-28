@@ -30,6 +30,9 @@ foreach ($fixture in $fixtures) {
     $count++
     Write-Host "Seeded $($fixture.Name) [$($response.ID)]"
 }
-
+if ($count -eq 0) {
+    Write-Error "Error: no Range fixture files found."
+    exit 1
+}
 Write-Host ""
 Write-Host "Seeded $count Range fixtures into Mailpit."
