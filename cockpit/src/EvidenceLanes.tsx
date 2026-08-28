@@ -27,7 +27,7 @@ function LaneColumn({ lane }: { lane: EvidenceLaneState }) {
         <h3>{lane.label}</h3>
       </header>
       {lane.items.length === 0 ? (
-        <p className="evidence-lane__empty">Waiting…</p>
+        <p className="evidence-lane__empty">{lane.status === "done" ? "Nothing reported" : "Waiting…"}</p>
       ) : (
         <dl className="evidence-lane__items">
           {lane.items.map((item, i) => (

@@ -157,8 +157,14 @@ export function buildEvidenceLanes(events: MissionEvent[]): EvidenceLaneState[] 
 
   return EVIDENCE_LANES.map((lane) => {
     const items = byLane.get(lane) ?? [];
+    // Stage advancement/mission completion is checked first, not item
+    // count: a lane the stream moves past (or the mission finishes)
+    // without ever reporting is done - it isn't still "pending" just
+    // because it happens to be empty (Qodo, PR #36 finding #1). Only
+    // while evidence is still the current stage does an empty lane mean
+    // "hasn't reported yet" rather than "reported nothing."
     const status: StageStatus =
-      items.length === 0 ? "pending" : currentIndex > evidenceStageIndex || missionDone ? "done" : "active";
+      currentIndex > evidenceStageIndex || missionDone ? "done" : items.length === 0 ? "pending" : "active";
     return { lane, label: LANE_LABEL[lane], status, items };
   });
 }
