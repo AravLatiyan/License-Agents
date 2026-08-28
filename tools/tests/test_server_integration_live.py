@@ -133,3 +133,40 @@ def test_notify_impersonated_delivers_into_mailpit(running_server):
     assert any("impersonating you" in s for s in subjects), (
         f"no impersonation notice found in Mailpit; subjects seen: {subjects[:5]}"
     )
+
+
+@pytest.mark.skipif(
+    not RUN_LIVE_MAILPIT_TESTS,
+    reason="needs the T-060 Range running (`docker compose up` in range/) - opt in with "
+    "RUN_LIVE_MAILPIT_TESTS=1; the deterministic behaviour is already covered by the mocked "
+    "tests in test_file_abuse_report.py",
+)
+def test_file_abuse_report_delivers_into_mailpit(running_server):
+    """Real SMTP delivery through the real transport, confirmed in Mailpit (T-033).
+
+    **This proves "the tool sent a report into the local Range", NOT "a real
+    abuse report was delivered to a registrar".** Nothing here reaches a real
+    registrar: the domain is a `.example` (RFC 2606, unregistrable) so RDAP
+    publishes no abuse contact for it, and even on the success path the tool
+    refuses any SMTP destination that is not loopback unless
+    ALLOW_EXTERNAL_SMTP=1 is deliberately set. CLAUDE.md trap #6 holds.
+
+    Because a `.example` domain has no RDAP abuse contact, the expected live
+    outcome is the graceful `sent: False` degradation, not a delivery - that
+    is the honest end-to-end result and the assertion reflects it rather than
+    pretending a report went out.
+    """
+    tools, result = call_tool(
+        running_server,
+        "file_abuse_report",
+        {"domain": "northgate-trust-finance.example", "evidence": "mission-live-check"},
+    )
+
+    assert "file_abuse_report" in [t.name for t in tools.tools]
+    assert not result.is_error, "the tool must degrade, never error, over the wire"
+    payload = json.loads(result.content[0].text)
+    assert payload["domain"] == "northgate-trust-finance.example"
+    # No abuse contact exists for a reserved .example domain, so the tool
+    # should report that rather than mail anyone.
+    assert payload["sent"] is False
+    assert payload["abuse_contact"] is None
