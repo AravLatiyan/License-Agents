@@ -41,6 +41,12 @@ URLHAUS_AUTH_KEY_CONFIGURED = bool(os.environ.get("URLHAUS_AUTH_KEY"))
 # `pytest` run depend on RDAP/crt.sh being fast and reachable right now.
 RUN_LIVE_DOMAIN_INTEL_TESTS = os.environ.get("RUN_LIVE_DOMAIN_INTEL_TESTS") == "1"
 
+# notify_impersonated (T-031) needs the T-060 Range running
+# (`docker compose up` in range/: Mailpit on 1025 SMTP + 8025 HTTP). Opt in
+# explicitly — the default suite must never require Docker to be running.
+RUN_LIVE_MAILPIT_TESTS = os.environ.get("RUN_LIVE_MAILPIT_TESTS") == "1"
+MAILPIT_HTTP = os.environ.get("MAILPIT_URL", "http://localhost:8025")
+
 
 @pytest.mark.skipif(
     not RUN_LIVE_DOMAIN_INTEL_TESTS,
@@ -88,3 +94,42 @@ def test_url_reputation_reachable_over_streamable_http(running_server):
     assert isinstance(payload["available"], bool)
     assert isinstance(payload["listed"], bool)
     assert isinstance(payload["tags"], list)
+
+
+@pytest.mark.skipif(
+    not RUN_LIVE_MAILPIT_TESTS,
+    reason="needs the T-060 Range running (`docker compose up` in range/) for a real SMTP "
+    "delivery - opt in with RUN_LIVE_MAILPIT_TESTS=1; the deterministic behaviour is already "
+    "covered by the mocked tests in test_notify_impersonated.py",
+)
+def test_notify_impersonated_delivers_into_mailpit(running_server):
+    """Real SMTP send through the real transport, then confirm via Mailpit's
+    own HTTP API that the message actually landed (T-031).
+
+    Safe by construction: the recipient is a `.example` address (RFC 2606,
+    unregistrable) and the tool only ever connects to the configured
+    SMTP_HOST, which defaults to the local Range - no real MX is resolved.
+    """
+    import urllib.request
+
+    address = "a.morgan@northgate-trust.example"
+    evidence = "mission-live-check"
+
+    tools, result = call_tool(
+        running_server, "notify_impersonated", {"address": address, "evidence": evidence}
+    )
+
+    assert "notify_impersonated" in [t.name for t in tools.tools]
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload["sent"] is True
+    assert payload["address"] == address
+
+    # Confirm delivery independently rather than trusting the tool's own
+    # return value - search Mailpit for the message it should have received.
+    with urllib.request.urlopen(f"{MAILPIT_HTTP}/api/v1/messages", timeout=10) as response:
+        inbox = json.loads(response.read())
+    subjects = [m.get("Subject", "") for m in inbox.get("messages", [])]
+    assert any("impersonating you" in s for s in subjects), (
+        f"no impersonation notice found in Mailpit; subjects seen: {subjects[:5]}"
+    )
