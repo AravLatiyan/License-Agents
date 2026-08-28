@@ -1,67 +1,44 @@
 import type { MissionEvent } from "../../contracts/events";
+import { buildMissionPlan, type PlanNode } from "./missionPlan";
 
-/** One short, human-readable line per event, built from its typed fields -
- *  not a JSON dump. Each case only exists because T-050 needs to prove the
- *  event stream is distinguishable; the real evidence/detonation/verdict
- *  panels are later tasks (T-052/T-053/T-054), not this. */
-function describe(event: MissionEvent): string {
-  switch (event.type) {
-    case "mission.message_received":
-      return `From ${event.message.from}`;
-    case "mission.evidence":
-      return describeEvidence(event);
-    case "mission.detonation":
-      return "error" in event.detonation ? `Detonation failed: ${event.detonation.error}` : event.detonation.summary;
-    case "mission.verdict":
-      return `${event.verdict.toUpperCase()} — ${event.summary}`;
-    case "mission.approval_required":
-      return `Gate ${event.gate_index}/${event.gate_count} requested: ${event.action.action}`;
-    case "mission.approval_resolved":
-      return `Gate ${event.gate_index}: ${event.status}`;
-    case "mission.action_executed":
-      return event.result_summary;
-    case "mission.complete":
-      return event.spoken_verdict;
-  }
-}
-
-function describeEvidence(event: Extract<MissionEvent, { type: "mission.evidence" }>): string {
-  switch (event.lane) {
-    case "infrastructure": {
-      const e = event.evidence;
-      if ("domain" in e) {
-        return `${e.domain} — registered ${e.registration_date ?? "not published"}, cert ${e.cert_issued_at ?? "unknown"}`;
-      }
-      return `${e.url} — ${e.listed ? "listed on URLhaus" : "not listed on URLhaus (weak signal only)"}`;
-    }
-    case "identity":
-      return event.evidence.lookalike_domain
-        ? `Reply-To looks like a lookalike of ${event.evidence.lookalike_of ?? "a known domain"}`
-        : "No lookalike domain detected";
-    case "history":
-      return `${event.evidence.prior_contact_count} prior contacts from ${event.evidence.domain}`;
-  }
-}
-
-const LANE_LABEL: Record<string, string> = {
-  infrastructure: "INFRASTRUCTURE",
-  identity: "IDENTITY",
-  history: "HISTORY",
-};
-
-function label(event: MissionEvent): string {
-  if (event.type === "mission.evidence") return `Evidence — ${LANE_LABEL[event.lane]}`;
-  return event.type.replace("mission.", "").replace(/_/g, " ");
-}
-
-export function MissionView({ events }: { events: MissionEvent[] }) {
+/** One node of the plan tree - a top-level stage or one of its children
+ *  (an evidence lane, a licence gate). Rendered the same way regardless of
+ *  depth; only top-level stages get children. */
+function PlanNodeItem({ node }: { node: PlanNode }) {
   return (
-    <ol className="mission-view">
-      {events.map((event, i) => (
-        <li key={i} className={`mission-event mission-event--${event.type}`}>
-          <span className="mission-event__label">{label(event)}</span>
-          <span className="mission-event__detail">{describe(event)}</span>
-        </li>
+    <li className={`plan-node plan-node--${node.status}`}>
+      <span className="plan-node__status" aria-hidden="true" />
+      {/* Status is otherwise conveyed only by color/opacity on the dot
+          above, which is aria-hidden - screen-reader and forced-colors
+          users need the word itself (Qodo, PR #32 finding #3), especially
+          on parent nodes (evidence/gates) that have no detail text. */}
+      <span className="sr-only">{node.status}: </span>
+      <span className="plan-node__label">{node.label}</span>
+      {node.detail && <span className="plan-node__detail">{node.detail}</span>}
+      {node.children && (
+        <ol className="plan-node__children">
+          {node.children.map((child) => (
+            <PlanNodeItem key={child.id} node={child} />
+          ))}
+        </ol>
+      )}
+    </li>
+  );
+}
+
+/**
+ * The mission view: the plan tree from §10's architecture diagram (message
+ * -> evidence -> detonation -> verdict -> 4 licence gates -> complete),
+ * expanding as matching events arrive (T-051). Evidence lanes and gate
+ * slots are always shown - pending until their events land - so the shape
+ * of the mission is visible from the first event, not just its history.
+ */
+export function MissionView({ events }: { events: MissionEvent[] }) {
+  const plan = buildMissionPlan(events);
+  return (
+    <ol className="plan-tree">
+      {plan.map((node) => (
+        <PlanNodeItem key={node.id} node={node} />
       ))}
     </ol>
   );
