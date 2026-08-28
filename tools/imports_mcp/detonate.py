@@ -16,6 +16,14 @@ unreachable, and a dead phishing URL is a routine result, not a tool
 failure, matching every other tool in this package's degrade-not-raise
 convention.
 
+SSRF guard (Rule 2880752) resolves a target's address once, then pins the
+actual connection to that exact address (`_pin_dns_resolution`) instead of
+trusting a second, independent DNS lookup when `requests` connects — closes
+the DNS-rebinding/TOCTOU gap Qodo's PR #37 review found (finding #3). The
+test-only `allow_private_network_targets` bypass additionally requires the
+`IMPORTS_MCP_ALLOW_TEST_TARGETS` env var (finding #5) — the parameter alone
+can no longer reach a private target.
+
 Also injects truststore at import time — same local TLS-inspection SSL
 issue documented in domain_intel.py / PLAN.md §6-§7. Every networked tool
 in this package needs this line.
@@ -23,9 +31,12 @@ in this package needs this line.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
+import os
 import socket
+import threading
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -39,6 +50,15 @@ MAX_REDIRECT_HOPS = 10
 REQUEST_TIMEOUT_SECONDS = 5
 MAX_BODY_BYTES = 2 * 1024 * 1024  # bound attacker-controlled response size before buffering/parsing
 MAX_RESPONSE_BYTES = 2000
+
+# Qodo finding #5 (PR #37 review): allow_private_network_targets=True alone
+# was judged too easy to mistake for a production-safe option, since it's a
+# bare function parameter. Requiring this env var too means a real
+# deployment - which never sets it - can't reach a private target even if
+# allow_private_network_targets=True were somehow passed; only a
+# deliberately-configured test run (tools/tests/conftest.py sets it for the
+# whole suite) can actually use the bypass.
+_ALLOW_TEST_TARGETS_ENV = "IMPORTS_MCP_ALLOW_TEST_TARGETS"
 
 _TRIMMABLE_STRING_FIELDS = ("summary", "final_url", "url", "error")
 
@@ -97,31 +117,103 @@ def _cap_response(result: dict[str, Any], max_bytes: int = MAX_RESPONSE_BYTES) -
     return capped
 
 
-def _is_private_target(hostname: str) -> str | None:
-    """Resolves the *address*, not just the hostname string, so a domain
-    that resolves to an internal IP (DNS rebinding) is caught too, not
-    only literal http://127.0.0.1-style URLs. Returns the offending
-    address, or None if every resolved address is public.
+class _PrivateNetworkTarget(Exception):
+    """Raised when every resolved address for a hostname is confirmed
+    private - carries the offending address for the caller's error
+    message."""
+
+    def __init__(self, address: str):
+        self.address = address
+        super().__init__(address)
+
+
+def _resolve_pinned_address(hostname: str) -> tuple[str, int] | None:
+    """Resolves `hostname` exactly once and returns (address, socket
+    family) to pin the actual connection to - the same address this
+    function itself just validated as public. Returns None if DNS
+    resolution fails outright (the real connection attempt surfaces that
+    as a normal, already-handled network error). Raises
+    `_PrivateNetworkTarget` if *any* resolved address is private, refusing
+    before any connection is attempted.
 
     Rule 2880752 (SSRF guard): stdlib `ipaddress.is_private` covers
     loopback/RFC1918/link-local/reserved space for both IPv4 and IPv6 in
     one check, rather than hand-rolling the range list detonate.js does -
     same guarantee, less code to keep in sync.
+
+    Resolving once and pinning the connection to that exact address (see
+    `_pin_dns_resolution`, used by `detonate()`) closes the DNS-rebinding
+    gap Qodo's PR #37 review found: previously this check and the
+    connection `requests.get()` actually made were two independent DNS
+    lookups, so a malicious authoritative DNS server could answer public
+    for the first and private for the second, defeating the guard
+    entirely.
     """
     try:
-        ipaddress.ip_address(hostname)
-        candidates = [hostname]
+        ip = ipaddress.ip_address(hostname)
     except ValueError:
-        try:
-            infos = socket.getaddrinfo(hostname, None)
-        except socket.gaierror:
-            return None  # DNS failure surfaces later as a real fetch error, not here
-        candidates = [info[4][0] for info in infos]
+        ip = None
 
-    for address in candidates:
+    if ip is not None:
+        if ip.is_private:
+            raise _PrivateNetworkTarget(hostname)
+        return hostname, (socket.AF_INET6 if ip.version == 6 else socket.AF_INET)
+
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return None
+
+    if not infos:
+        return None
+
+    for family, _socktype, _proto, _canonname, sockaddr in infos:
+        address = sockaddr[0]
         if ipaddress.ip_address(address).is_private:
-            return address
-    return None
+            raise _PrivateNetworkTarget(address)
+
+    family, _socktype, _proto, _canonname, sockaddr = infos[0]
+    return sockaddr[0], family
+
+
+# --- DNS pinning: force the actual connection to the address _resolve_
+# pinned_address already validated, instead of trusting a second,
+# independent resolution when requests.get() connects. ---
+
+_real_getaddrinfo = socket.getaddrinfo
+_pin_state = threading.local()
+
+
+def _pinning_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    pin = getattr(_pin_state, "pin", None)
+    if pin is not None and host == pin[0]:
+        _, address, pinned_family = pin
+        sockaddr = (address, port) if pinned_family == socket.AF_INET else (address, port, 0, 0)
+        return [(pinned_family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+    return _real_getaddrinfo(host, port, family, type, proto, flags)
+
+
+# Installed exactly once, at import time - never reassigned again. Only a
+# thread-local flag changes per call (see below), so concurrent detonate()
+# calls in different threads can never see or clobber each other's pin.
+socket.getaddrinfo = _pinning_getaddrinfo
+
+
+@contextlib.contextmanager
+def _pin_dns_resolution(hostname: str, address: str, family: int):
+    """Forces every `socket.getaddrinfo()` call for `hostname`, in the
+    *current thread only*, to resolve to exactly `address` for the
+    duration of this block. `requests.get()` (via urllib3's
+    `create_connection`) calls `socket.getaddrinfo` internally when
+    actually connecting; without this, that would be a second, independent
+    DNS lookup that a DNS-rebinding attacker could answer differently from
+    the one `_resolve_pinned_address` already validated."""
+    previous = getattr(_pin_state, "pin", None)
+    _pin_state.pin = (hostname, address, family)
+    try:
+        yield
+    finally:
+        _pin_state.pin = previous
 
 
 def _describe_error(exc: Exception) -> str:
@@ -242,8 +334,12 @@ def detonate(
 
     `allow_private_network_targets` exists only for this module's own test
     fixtures to opt back into a local target explicitly - never set it for
-    a real detonation. `timeout_seconds`/`max_body_bytes` default to the
-    module constants and only exist as parameters so tests can exercise the
+    a real detonation. It additionally requires the `IMPORTS_MCP_ALLOW_TEST_
+    TARGETS` env var to be set (Qodo finding #5, PR #37 review) - passing
+    the parameter alone is not enough, so a real deployment (which never
+    sets that env var) can't reach a private target no matter what a caller
+    passes. `timeout_seconds`/`max_body_bytes` default to the module
+    constants and only exist as parameters so tests can exercise the
     timeout/oversized-body paths without a 5-second wait or a 2MB fixture.
     """
     redirect_chain: list[dict[str, Any]] = []
@@ -282,27 +378,31 @@ def detonate(
                 }
             )
 
-        if not allow_private_network_targets:
-            private_target = _is_private_target(hostname or "")
-            if private_target:
+        bypass_in_effect = allow_private_network_targets and os.environ.get(_ALLOW_TEST_TARGETS_ENV) == "1"
+
+        pinned: tuple[str, int] | None = None
+        if not bypass_in_effect:
+            try:
+                pinned = _resolve_pinned_address(hostname or "")
+            except _PrivateNetworkTarget as exc:
                 return _cap_response(
                     {
                         "url": start_url,
                         "redirect_chain": redirect_chain,
                         "error": (
                             f"refused private/internal network target: "
-                            f"{hostname} resolves to {private_target}"
+                            f"{hostname} resolves to {exc.address}"
                         ),
                     }
                 )
 
         try:
-            response = requests.get(
-                current_url,
-                allow_redirects=False,
-                timeout=timeout_seconds,
-                stream=True,
-            )
+            get_kwargs = dict(allow_redirects=False, timeout=timeout_seconds, stream=True)
+            if pinned is not None:
+                with _pin_dns_resolution(hostname or "", pinned[0], pinned[1]):
+                    response = requests.get(current_url, **get_kwargs)
+            else:
+                response = requests.get(current_url, **get_kwargs)
         except (requests.RequestException, ValueError) as exc:
             # requests builds Response.next internally even with
             # allow_redirects=False, which parses a malformed Location
