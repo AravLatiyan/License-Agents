@@ -210,7 +210,9 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   };
 
   // --- detonation / verdict: single events --------------------------------
-  const detonationEvent = events.find(
+  // findLast: a retried/re-emitted detonation is a later, more current
+  // result, not a duplicate to ignore (Qodo, PR #41 finding #1, DetonationPanel.tsx).
+  const detonationEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.detonation" }> => e.type === "mission.detonation",
   );
   const detonationNode: PlanNode = {

@@ -12,7 +12,12 @@ import type { DetonationForm, DetonationResult, MissionEvent, RedirectHop } from
  * needs to change, everything else already renders it.
  */
 export function DetonationPanel({ events }: { events: MissionEvent[] }) {
-  const event = events.find(
+  // findLast, not find: a retried/re-emitted detonation is a later, more
+  // current result, not a duplicate to ignore - the panel must track the
+  // stream's current state the same way gate/lane state does everywhere
+  // else in this app, not freeze on whichever result happened first
+  // (Qodo, PR #41 finding #1).
+  const event = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.detonation" }> => e.type === "mission.detonation",
   );
 
