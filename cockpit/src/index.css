@@ -335,7 +335,11 @@ body {
   border-color: orange;
 }
 .verdict--suspicious .verdict__label {
-  color: orange;
+  /* plain `orange` text is ~1.97:1 against white - fails WCAG's 3:1 minimum
+     even for this large bold label (Qodo, PR #43 finding #1). #b45309
+     measures ~5:1 on white and ~4.2:1 on black, clearing the bar in both
+     the light and dark halves of this page's `color-scheme: light dark`. */
+  color: #b45309;
 }
 
 .verdict--legitimate {

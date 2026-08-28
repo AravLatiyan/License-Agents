@@ -25,14 +25,22 @@ export function VerdictPanel({ events }: { events: MissionEvent[] }) {
   return (
     <section className="verdict-panel" aria-label="Verdict">
       <h2>Verdict</h2>
-      {!event ? (
-        <p className="verdict-panel__empty">Waiting…</p>
-      ) : (
-        <div className={`verdict verdict--${event.verdict}`}>
-          <p className="verdict__label">{VERDICT_TEXT[event.verdict]}</p>
-          <p className="verdict__summary">{event.summary}</p>
-        </div>
-      )}
+      {/* role="status" implies aria-live="polite" + aria-atomic="true" - the
+          verdict arrives asynchronously and replaces "Waiting…" in place, so
+          without a live region a screen-reader user gets no notification
+          that this mission's most critical result just appeared (Qodo,
+          PR #43 finding #2). One stable element so the swap fires as a
+          single announcement, not a diff of loose text nodes. */}
+      <div role="status">
+        {!event ? (
+          <p className="verdict-panel__empty">Waiting…</p>
+        ) : (
+          <div className={`verdict verdict--${event.verdict}`}>
+            <p className="verdict__label">{VERDICT_TEXT[event.verdict]}</p>
+            <p className="verdict__summary">{event.summary}</p>
+          </div>
+        )}
+      </div>
     </section>
   );
 }
