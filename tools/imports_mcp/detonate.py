@@ -163,7 +163,13 @@ def _extract_forms(html_text: str, page_url: str) -> list[dict[str, Any]]:
     for form in root.findall(".//form"):
         raw_action = form.get("action") or ""
         method = (form.get("method") or "GET").upper()
-        asks_password = form.find('.//input[@type="password"]') is not None
+        # HTML's `type` attribute is an enumerated attribute, matched
+        # case-insensitively per spec - type="PASSWORD" is a real password
+        # field in every browser. An XPath string-equality check on the raw
+        # attribute value would miss it (Qodo finding #2, PR #37 review).
+        asks_password = any(
+            (inp.get("type") or "").lower() == "password" for inp in form.findall(".//input")
+        )
 
         try:
             action_url = urljoin(page_url, raw_action or page_url)
@@ -176,7 +182,7 @@ def _extract_forms(html_text: str, page_url: str) -> list[dict[str, Any]]:
             # form on the page, so this is exactly the action_invalid path.
             parsed = None
         if parsed is not None and parsed.scheme and parsed.netloc:
-            action_origin = f"{parsed.scheme}://{parsed.netloc}"
+            action_origin = _normalize_origin(parsed)
             forms.append(
                 {
                     "action": action_url,
@@ -201,9 +207,27 @@ def _extract_forms(html_text: str, page_url: str) -> list[dict[str, Any]]:
     return forms
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _normalize_origin(parsed) -> str:
+    """Browser-normalized origin: lowercased scheme/host (urlparse already
+    lowercases `.hostname`), default port stripped, credentials excluded.
+    Comparing raw `scheme://netloc` treats https://example.com and
+    https://example.com:443 as different origins even though they're the
+    same one - a real false-positive risk for the cross-domain check this
+    feeds (Qodo finding #4, PR #37 review)."""
+    port = parsed.port
+    if port is not None and port == _DEFAULT_PORTS.get(parsed.scheme):
+        port = None
+    netloc = parsed.hostname or ""
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return f"{parsed.scheme}://{netloc}"
+
+
 def _origin(url: str) -> str:
-    parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}"
+    return _normalize_origin(urlparse(url))
 
 
 def detonate(
@@ -235,7 +259,20 @@ def detonate(
                 }
             )
 
-        parsed = urlparse(current_url)
+        try:
+            parsed = urlparse(current_url)
+            hostname = parsed.hostname
+        except ValueError as exc:
+            # urlparse/`.hostname` raise for some malformed inputs (e.g. an
+            # unbalanced "[" in a bracketed-IPv6-style authority) instead of
+            # returning an inert result - this is the very first parse of
+            # start_url itself, so an unguarded call here was the one path
+            # that could still escape the documented never-raise contract
+            # (Qodo finding #1, PR #37 review).
+            return _cap_response(
+                {"url": start_url, "redirect_chain": redirect_chain, "error": f"malformed URL: {exc}"}
+            )
+
         if parsed.scheme not in ("http", "https"):
             return _cap_response(
                 {
@@ -246,7 +283,7 @@ def detonate(
             )
 
         if not allow_private_network_targets:
-            private_target = _is_private_target(parsed.hostname or "")
+            private_target = _is_private_target(hostname or "")
             if private_target:
                 return _cap_response(
                     {
@@ -254,7 +291,7 @@ def detonate(
                         "redirect_chain": redirect_chain,
                         "error": (
                             f"refused private/internal network target: "
-                            f"{parsed.hostname} resolves to {private_target}"
+                            f"{hostname} resolves to {private_target}"
                         ),
                     }
                 )
