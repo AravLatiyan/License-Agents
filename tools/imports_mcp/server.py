@@ -23,6 +23,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.normaliser import parse_message as _parse_message
+from imports_mcp.notify_impersonated import MAX_ADDRESS_LENGTH, _ADDRESS_RE
+from imports_mcp.notify_impersonated import notify_impersonated as _notify_impersonated
 from imports_mcp.url_reputation import url_reputation as _url_reputation
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
@@ -190,6 +192,35 @@ def url_reputation(url: str) -> dict[str, Any]:
     if not url:
         raise ToolError("url must not be empty")
     return _url_reputation(url)
+
+
+@mcp.tool()
+def notify_impersonated(address: str, evidence: str) -> dict[str, Any]:
+    """Email the impersonated party to warn them they're being impersonated.
+
+    **Gated (T-034):** TrueForge pauses this call for a human licence
+    decision before it runs — one of the four sequential gates (§10/§17).
+    Approval is the harness's job, never checked here.
+
+    Sends via SMTP_HOST/SMTP_PORT, defaulting to the T-060 Mailpit range
+    (localhost:1025). Never resolves the recipient's real MX.
+    """
+    address = address.strip()
+    evidence = evidence.strip()
+    if not address:
+        raise ToolError("address must not be empty")
+    if not evidence:
+        # Without a reference the recipient gets an unactionable "you were
+        # impersonated, somehow, by someone" mail — worse than not sending.
+        raise ToolError("evidence must not be empty")
+    if len(address) > MAX_ADDRESS_LENGTH or not _ADDRESS_RE.match(address):
+        # Rejected before any SMTP connection: an address carrying a newline,
+        # comma, or angle bracket could inject headers or a second recipient
+        # into the outgoing message. This tool mails whoever it's told to,
+        # off model-generated arguments, so it refuses anything unrecognised
+        # rather than trying to be permissive.
+        raise ToolError(f"{address!r} is not a valid email address")
+    return _notify_impersonated(address, evidence)
 
 
 if __name__ == "__main__":
