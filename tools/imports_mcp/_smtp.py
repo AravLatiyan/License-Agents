@@ -104,8 +104,16 @@ def cap_response(
     return capped
 
 
-def is_valid_address(address: str) -> bool:
-    """One address, no header-injection or routing characters, length-bounded."""
+def is_valid_address(address: Any) -> bool:
+    """One address, no header-injection or routing characters, length-bounded.
+
+    Takes `Any`, not `str`, on purpose: callers feed this third-party data.
+    RDAP hands back whatever the registry published, and a non-string there
+    (a list, a dict, a number) used to raise TypeError out of `re.match` and
+    break the "this tool never raises" contract (Qodo, PR #40).
+    """
+    if not isinstance(address, str):
+        return False
     return bool(address) and len(address) <= MAX_ADDRESS_LENGTH and bool(_ADDRESS_RE.match(address))
 
 
@@ -141,28 +149,43 @@ def external_smtp_allowed() -> bool:
     return os.environ.get(ALLOW_EXTERNAL_SMTP_ENV, "").strip() == "1"
 
 
-def is_range_destination(host: str) -> bool:
-    """True only if `host` is the local Range — i.e. loopback.
+def resolve_range_target(host: str) -> str | None:
+    """Resolve `host` and return a loopback IP **literal** to connect to, or
+    None if it is not provably the local Range.
 
-    Resolves the *SMTP host* (never an MX record for the recipient) and
-    checks the resolved address, not just the string, so a name pointing
-    somewhere else cannot masquerade as localhost. Same "check the resolved
-    IP, not the hostname" approach as detonate.js's SSRF guard.
+    Returning the literal (rather than a bool) is the point: checking the
+    name and then handing the *name* to `smtplib` resolves DNS twice, and the
+    second answer can differ from the first — classic DNS rebinding, and the
+    caller would connect somewhere the guard never approved (Qodo, PR #40).
+    Connecting to the already-validated address closes that window.
 
-    Resolution failure is treated as NOT-Range: a host we cannot prove is
-    local must not be assumed safe.
+    Resolves the *SMTP host* only, never an MX record for the recipient.
+    Resolution failure is NOT-Range: a host we cannot prove is local must not
+    be assumed safe.
     """
     try:
         infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, ValueError):
-        return False
+    except (socket.gaierror, UnicodeError, ValueError, OSError):
+        return None
     if not infos:
-        return False
+        return None
+
+    validated: str | None = None
     for info in infos:
         address = info[4][0]
         try:
-            if not ipaddress.ip_address(address).is_loopback:
-                return False
+            parsed = ipaddress.ip_address(address)
         except ValueError:
-            return False
-    return True
+            return None
+        if not parsed.is_loopback:
+            # Every answer must be loopback: a name resolving to both a
+            # loopback and a routable address must not be treated as local.
+            return None
+        if validated is None:
+            validated = address
+    return validated
+
+
+def is_range_destination(host: str) -> bool:
+    """Convenience wrapper for callers that only need the yes/no."""
+    return resolve_range_target(host) is not None

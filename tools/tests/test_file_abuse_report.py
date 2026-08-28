@@ -111,18 +111,29 @@ def test_report_is_plain_text_only_no_html_no_remote_images():
 
 @patch("imports_mcp.file_abuse_report.smtplib.SMTP")
 @patch("imports_mcp.file_abuse_report._domain_intel")
-def test_default_destination_is_the_range(mock_intel, mock_smtp):
-    """With no configuration, this tool can only ever reach a local Mailpit."""
+def test_default_destination_is_a_validated_loopback_address(mock_intel, mock_smtp):
+    """With no configuration, this tool can only ever reach a local Mailpit.
+
+    It connects to the *already-validated loopback literal*, not to the
+    hostname: handing `smtplib` the name would resolve DNS a second time and
+    the second answer can differ from the one the guard approved — DNS
+    rebinding (Qodo, PR #40 finding #2). The reported `smtp_host` still shows
+    the configured name, which is what an operator recognises.
+    """
+    import ipaddress
+
     mock_intel.return_value = _intel()
     cm, _ = _mock_smtp()
     mock_smtp.return_value = cm
 
-    file_abuse_report(DOMAIN, EVIDENCE)
+    result = file_abuse_report(DOMAIN, EVIDENCE)
 
-    assert (mock_smtp.call_args[0][0], mock_smtp.call_args[0][1]) == (
-        DEFAULT_SMTP_HOST,
-        DEFAULT_SMTP_PORT,
+    connected_host, connected_port = mock_smtp.call_args[0][0], mock_smtp.call_args[0][1]
+    assert ipaddress.ip_address(connected_host).is_loopback, (
+        f"connected to {connected_host!r}, which is not a loopback literal"
     )
+    assert connected_port == DEFAULT_SMTP_PORT
+    assert result["smtp_host"] == DEFAULT_SMTP_HOST
 
 
 @patch("imports_mcp.file_abuse_report.smtplib.SMTP")
@@ -372,3 +383,57 @@ def test_module_never_implements_its_own_approval_check():
     code = "\n".join(code_lines)
     assert "def approve" not in code
     assert "require_approval" not in code.replace("require_approval_for_tools", "")
+
+
+# --- regressions for Qodo's PR #40 findings #1 and #2 ----------------------
+
+
+@pytest.mark.parametrize("weird_contact", [["a@b.example"], {"email": "a@b.example"}, 12345, True])
+@patch("imports_mcp.file_abuse_report._domain_intel")
+def test_non_string_rdap_contact_degrades_instead_of_raising(mock_intel, weird_contact):
+    """Regression, Qodo PR #40 finding #1. RDAP hands back whatever the
+    registry published. A non-string abuse contact used to raise TypeError out
+    of `re.match`/`len`, breaking the "this tool never raises" contract every
+    imports_mcp tool promises and losing the whole turn."""
+    mock_intel.return_value = _intel(abuse_contact=weird_contact)
+
+    with patch("imports_mcp.file_abuse_report.smtplib.SMTP") as mock_smtp:
+        result = file_abuse_report(DOMAIN, EVIDENCE)
+
+    assert result["sent"] is False
+    assert "not a usable email address" in result["note"]
+    mock_smtp.assert_not_called()
+
+
+@patch("imports_mcp.file_abuse_report.smtplib.SMTP")
+@patch("imports_mcp.file_abuse_report._domain_intel")
+def test_connects_to_validated_literal_not_the_rebindable_name(mock_intel, mock_smtp, monkeypatch):
+    """Regression, Qodo PR #40 finding #2. Validating the name and then
+    handing the *name* to smtplib resolves DNS twice; between the two answers
+    a hostile resolver can swap in a routable address the guard never
+    approved. Connecting to the validated literal closes that window."""
+    import ipaddress
+
+    mock_intel.return_value = _intel()
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "localhost")
+
+    file_abuse_report(DOMAIN, EVIDENCE)
+
+    connected = mock_smtp.call_args[0][0]
+    assert connected != "localhost", "must not hand smtplib a re-resolvable name"
+    assert ipaddress.ip_address(connected).is_loopback
+
+
+@patch("imports_mcp.file_abuse_report._domain_intel")
+def test_guard_runs_before_the_rdap_lookup(mock_intel, monkeypatch):
+    """Regression, Qodo PR #40 finding #3's root cause. If we are not allowed
+    to send at all, there is no reason to query a third-party registry first."""
+    monkeypatch.setenv("SMTP_HOST", "smtp.real-registrar.example")
+
+    result = file_abuse_report(DOMAIN, EVIDENCE)
+
+    assert result["sent"] is False
+    assert "refused" in result["note"]
+    mock_intel.assert_not_called(), "must not touch RDAP when sending is refused"

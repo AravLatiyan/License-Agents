@@ -43,7 +43,7 @@ from imports_mcp._smtp import (
     SMTP_TIMEOUT_SECONDS,
     cap_response,
     external_smtp_allowed,
-    is_range_destination,
+    resolve_range_target,
     is_valid_address,
     smtp_target,
 )
@@ -132,6 +132,30 @@ def file_abuse_report(domain: str, evidence: str) -> dict[str, Any]:
     """
     host, port = smtp_target()
 
+    # CLAUDE.md trap #6: never fire a real abuse report at a real registrar.
+    # Checked BEFORE the RDAP lookup, not after: if we are not permitted to
+    # send at all, there is no reason to query a third-party registry first.
+    # `connect_host` is the already-validated loopback literal — connecting
+    # to it rather than re-resolving `host` closes the DNS-rebinding window
+    # between the check and the connection (Qodo, PR #40).
+    connect_host = resolve_range_target(host)
+    if connect_host is None:
+        if not external_smtp_allowed():
+            return cap_response(
+                _result(
+                    domain, evidence, host,
+                    sent=False, available=False, abuse_contact=None,
+                    note=(
+                        f"refused: SMTP host {host!r} is not the local Range and "
+                        f"{ALLOW_EXTERNAL_SMTP_ENV}=1 is not set — an abuse report to a real "
+                        "registrar must never be sent from a test run (CLAUDE.md trap #6)"
+                    ),
+                ),
+                _TRIMMABLE_STRING_FIELDS,
+            )
+        # Deliberate opt-in: dial the operator's host as given.
+        connect_host = host
+
     abuse_contact, failure_note = _lookup_abuse_contact(domain)
     if failure_note is not None:
         return cap_response(
@@ -156,28 +180,9 @@ def file_abuse_report(domain: str, evidence: str) -> dict[str, Any]:
             _TRIMMABLE_STRING_FIELDS,
         )
 
-    # CLAUDE.md trap #6: never fire a real abuse report at a real registrar.
-    # The recipient here is a genuine registrar mailbox, so refuse unless the
-    # SMTP destination is the local Range — or the operator has deliberately
-    # opted in. Refusing is a *result*, not an exception: the mission still
-    # learns the report was not filed and why.
-    if not is_range_destination(host) and not external_smtp_allowed():
-        return cap_response(
-            _result(
-                domain, evidence, host,
-                sent=False, available=False, abuse_contact=abuse_contact,
-                note=(
-                    f"refused: SMTP host {host!r} is not the local Range and "
-                    f"{ALLOW_EXTERNAL_SMTP_ENV}=1 is not set — an abuse report to a real "
-                    "registrar must never be sent from a test run (CLAUDE.md trap #6)"
-                ),
-            ),
-            _TRIMMABLE_STRING_FIELDS,
-        )
-
     message = build_message(domain, evidence, abuse_contact)
     try:
-        with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        with smtplib.SMTP(connect_host, port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
             smtp.send_message(message)
     except (OSError, smtplib.SMTPException) as exc:
         return cap_response(
