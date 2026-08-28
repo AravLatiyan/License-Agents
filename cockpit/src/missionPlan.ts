@@ -121,6 +121,7 @@ function stageStatus(stageIndex: number, currentIndex: number, missionDone: bool
 interface GateState {
   action?: string;
   resolved?: "allow" | "deny";
+  reason?: string;
   resultSummary?: string;
   executed: boolean; // tracked separately from resultSummary - "" is a valid, real summary
 }
@@ -221,7 +222,9 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     if (e.type === "mission.approval_required") {
       gateState(e.gate_index).action = e.action.action;
     } else if (e.type === "mission.approval_resolved") {
-      gateState(e.gate_index).resolved = e.status;
+      const g = gateState(e.gate_index);
+      g.resolved = e.status;
+      g.reason = e.reason;
     } else if (e.type === "mission.action_executed") {
       const g = gateState(e.gate_index);
       g.action ??= e.action;
@@ -237,14 +240,18 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     }
     // "" is a genuine, valid result_summary (Qodo finding #2) - `executed`
     // tracks whether the event happened at all, not the text it carried.
+    // `reason` is the human's stated reason for the allow/deny decision -
+    // optional per the contract, kept visible when present rather than
+    // dropped in favour of the generic status text (Qodo, PR #34 finding #1).
+    const withReason = (text: string) => (g.reason ? `${text} — ${g.reason}` : text);
     if (g.executed) {
-      return { id: `gate:${gateIndex}`, label, status: "done", detail: `Executed: ${g.resultSummary}` };
+      return { id: `gate:${gateIndex}`, label, status: "done", detail: withReason(`Executed: ${g.resultSummary}`) };
     }
     if (g.resolved === "deny") {
-      return { id: `gate:${gateIndex}`, label, status: "denied", detail: "DENIED" };
+      return { id: `gate:${gateIndex}`, label, status: "denied", detail: withReason("DENIED") };
     }
     if (g.resolved === "allow") {
-      return { id: `gate:${gateIndex}`, label, status: "active", detail: "Allowed — executing…" };
+      return { id: `gate:${gateIndex}`, label, status: "active", detail: withReason("Allowed — executing…") };
     }
     if (!g.action) {
       // Resolved (somehow) with no action ever observed - genuinely unusual,
