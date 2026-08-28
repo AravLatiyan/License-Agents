@@ -222,7 +222,9 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     detail: detonationEvent ? describeEvent(detonationEvent) : null,
   };
 
-  const verdictEvent = events.find(
+  // findLast: a re-emitted verdict is the current judgment, not a
+  // duplicate (§7, same class as T-053's detonationEvent fix).
+  const verdictEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.verdict" }> => e.type === "mission.verdict",
   );
   const verdictNode: PlanNode = {

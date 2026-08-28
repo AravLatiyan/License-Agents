@@ -286,3 +286,61 @@ body {
 .detonation-result__summary {
   font-size: 0.9rem;
 }
+
+/* Verdict panel (T-054) - the demo's plain-language judgment moment (§17,
+   1:25-1:50), the most visually prominent panel: bigger type than
+   everything else, color-coded by verdict. */
+.verdict-panel {
+  margin: 16px 0;
+}
+
+.verdict-panel h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+.verdict-panel__empty {
+  opacity: 0.45;
+}
+
+.verdict {
+  border: 2px solid;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.verdict__label {
+  margin: 0 0 6px;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.verdict__summary {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.verdict--malicious {
+  border-color: crimson;
+}
+.verdict--malicious .verdict__label {
+  color: crimson;
+}
+
+.verdict--suspicious {
+  border-color: orange;
+}
+.verdict--suspicious .verdict__label {
+  color: orange;
+}
+
+.verdict--legitimate {
+  border-color: seagreen;
+}
+.verdict--legitimate .verdict__label {
+  color: seagreen;
+}
