@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import missionHappyPath from "../../contracts/fixtures/mission-happy-path.json";
+import { ApprovalPanel } from "./ApprovalPanel";
 import { DetonationPanel } from "./DetonationPanel";
 import { EvidenceLanes } from "./EvidenceLanes";
 import { MissionView } from "./MissionView";
@@ -28,6 +29,7 @@ function App() {
       <EvidenceLanes events={events} />
       <DetonationPanel events={events} />
       <VerdictPanel events={events} />
+      <ApprovalPanel events={events} />
       <MissionView events={events} />
     </main>
   );
