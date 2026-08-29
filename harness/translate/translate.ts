@@ -278,6 +278,14 @@ export function createTranslator(options: TranslatorOptions): Translator {
   function handleApprovalRequired(raw: Record<string, unknown>): MissionEvent[] {
     const toolCalls = raw.tool_calls;
     if (!isArr(toolCalls)) return [];
+    // ToolApprovalRequiredEvent requires id/created_at/thread_id
+    // (contracts/events.ts) - `raw` is cast verbatim into the emitted
+    // event's `approval` field below, so a missing one here would produce a
+    // MissionEvent that cockpit/src/missionSource.ts's checkToolApprovalRequired
+    // rejects at runtime (Qodo, PR #75 finding #1). Caught before any gate is
+    // built, same "no gate is better than a malformed one" posture as the
+    // source_event_id check below.
+    if (!isStr(raw.id) || !isStr(raw.created_at) || !isStr(raw.thread_id)) return [];
     const out: MissionEvent[] = [];
 
     for (const call of toolCalls) {
@@ -377,16 +385,17 @@ export function createTranslator(options: TranslatorOptions): Translator {
         return [{ type: "mission.message_received", mission_id: missionId, message: parsed }];
 
       case "domain_intel":
+        // Validated against domain_intel's own shape, not "either
+        // infrastructure-lane shape" - a url_reputation-shaped result
+        // reaching this branch is exactly as wrong as any other malformed
+        // payload, and the pre-fix grouped check would have accepted it
+        // (Qodo, PR #75 finding #3).
+        if (!isDomainIntel(parsed)) return [];
+        return [{ type: "mission.evidence", mission_id: missionId, lane: "infrastructure", evidence: parsed }];
+
       case "url_reputation":
-        if (!isDomainIntel(parsed) && !isUrlReputation(parsed)) return [];
-        return [
-          {
-            type: "mission.evidence",
-            mission_id: missionId,
-            lane: "infrastructure",
-            evidence: parsed,
-          },
-        ];
+        if (!isUrlReputation(parsed)) return [];
+        return [{ type: "mission.evidence", mission_id: missionId, lane: "infrastructure", evidence: parsed }];
 
       case "correspondence_history":
         if (!isCorrespondenceHistory(parsed)) return [];
@@ -416,9 +425,18 @@ export function createTranslator(options: TranslatorOptions): Translator {
       case "notify_impersonated":
       case "create_block_rule":
       case "file_abuse_report": {
+        // Every one of the four gated tools shares one field across success
+        // and failure alike: a string `note` (quarantine.py/
+        // notify_impersonated.py/file_abuse_report.py all return one; their
+        // own status field's *name* differs - quarantined vs sent - so note
+        // is the one thing safe to require without hard-coding a per-tool
+        // union here). Without it, `{}` (or any non-tool-shaped JSON) would
+        // otherwise still produce mission.action_executed, falsely claiming
+        // the action ran (Qodo, PR #75 finding #2).
+        if (!isRecord(parsed) || !isStr(parsed.note)) return [];
         const gateIndex = gateIndexByToolCallId.get(toolCallId);
         if (gateIndex === undefined) return []; // result for a call that never became a licence gate - nothing to attach it to
-        const resultSummary = isRecord(parsed) && isStr(parsed.note) ? parsed.note : "";
+        const resultSummary = parsed.note;
         const event: ActionExecutedEvent = {
           type: "mission.action_executed",
           mission_id: missionId,
