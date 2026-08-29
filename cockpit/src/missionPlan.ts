@@ -213,6 +213,17 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
       const g = gateState(e.gate_index);
       g.action = e.action.action;
       g.request = e.approval;
+      // A fresh request for a gate index that already carries a prior
+      // outcome (a retried tool call, same pattern as T-053's retried
+      // detonation) supersedes that outcome - without this, the terminal
+      // fields from the earlier attempt would outrank the new `request`
+      // in every consumer's status derivation and the retry would render
+      // as still denied/executed instead of newly requested (Qodo, PR #52
+      // finding #2).
+      g.resolved = undefined;
+      g.reason = undefined;
+      g.resultSummary = undefined;
+      g.executed = false;
     } else if (e.type === "mission.approval_resolved") {
       const g = gateState(e.gate_index);
       g.resolved = e.status;

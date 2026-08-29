@@ -49,12 +49,20 @@ function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates
   else status = "pending";
 
   return (
-    <li className={`approval-gate approval-gate--${status}`} role="status">
+    <li className={`approval-gate approval-gate--${status}`}>
+      {/* A concise, textual live region separate from the visible card -
+          role="status" on the whole card would announce the entire raw
+          tool_calls JSON verbatim (and do so from four independent regions
+          at once) instead of a short state change (Qodo, PR #52 finding
+          #3). This element carries only the short summary text; the JSON
+          and visible UI below stay out of the live region entirely. */}
+      <span className="sr-only" role="status">
+        {statusAnnouncement(gate.gateIndex, status, label, gate.reason)}
+      </span>
       <div className="approval-gate__header">
         <span className="approval-gate__index">
           Gate {gate.gateIndex}/4
         </span>
-        <span className="sr-only">{status}: </span>
         <span className="approval-gate__title">{label ?? "Awaiting request…"}</span>
       </div>
 
@@ -94,4 +102,26 @@ function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates
       {status === "pending" && <p className="approval-gate__outcome approval-gate__outcome--empty">Waiting…</p>}
     </li>
   );
+}
+
+/** Short text for the sr-only live region above - never the raw JSON. */
+function statusAnnouncement(
+  gateIndex: number,
+  status: "pending" | "requested" | "allowed" | "denied" | "executed",
+  label: string | null,
+  reason: string | undefined,
+): string {
+  const prefix = `Gate ${gateIndex}${label ? ` (${label})` : ""}`;
+  switch (status) {
+    case "pending":
+      return `${prefix}: waiting`;
+    case "requested":
+      return `${prefix}: licence required`;
+    case "allowed":
+      return `${prefix}: allowed, executing`;
+    case "denied":
+      return `${prefix}: denied${reason ? ` — ${reason}` : ""}`;
+    case "executed":
+      return `${prefix}: executed`;
+  }
 }
