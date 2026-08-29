@@ -45,7 +45,13 @@ RUN_LIVE_DOMAIN_INTEL_TESTS = os.environ.get("RUN_LIVE_DOMAIN_INTEL_TESTS") == "
 # (`docker compose up` in range/: Mailpit on 1025 SMTP + 8025 HTTP). Opt in
 # explicitly — the default suite must never require Docker to be running.
 RUN_LIVE_MAILPIT_TESTS = os.environ.get("RUN_LIVE_MAILPIT_TESTS") == "1"
-MAILPIT_HTTP = os.environ.get("MAILPIT_URL", "http://localhost:8025")
+# .strip() or default, not .get(k, default) - a blank MAILPIT_URL= (what
+# .env.example ships) is a *set* env var, so .get()'s default never applies
+# and this would silently resolve to "" (Qodo, PR #64 review, "Blank
+# mailpit url breaks live test") - the same fallback semantics
+# correspondence_history._mailpit_url() already uses, and the exact
+# SMTP_HOST bug class Qodo caught on PR #29.
+MAILPIT_HTTP = os.environ.get("MAILPIT_URL", "").strip() or "http://localhost:8025"
 
 
 @pytest.mark.skipif(
@@ -133,6 +139,60 @@ def test_notify_impersonated_delivers_into_mailpit(running_server):
     assert any("impersonating you" in s for s in subjects), (
         f"no impersonation notice found in Mailpit; subjects seen: {subjects[:5]}"
     )
+
+
+@pytest.mark.skipif(
+    not RUN_LIVE_MAILPIT_TESTS,
+    reason="needs the T-060 Range running (`docker compose up` in range/) to seed a real "
+    "message and query it back over Mailpit's HTTP API - opt in with RUN_LIVE_MAILPIT_TESTS=1; "
+    "the deterministic matching/degradation behaviour is already covered by the mocked tests "
+    "in test_correspondence_history.py",
+)
+def test_correspondence_history_finds_a_message_seeded_directly_into_mailpit(running_server):
+    """Seeds one message straight into Mailpit via its own HTTP API (T-022) -
+    the same /api/v1/send endpoint range/seed.sh uses, no IMAP anywhere -
+    then confirms correspondence_history actually finds it back, proving
+    the real Mailpit integration end to end, not just the mocked unit tests.
+    """
+    import urllib.request
+
+    # A domain/address seen nowhere else - not shared with any range/fixtures/
+    # sender (northgate-trust*/meridian-courier*/universal-imports* are all
+    # already heavily seeded by seed.sh, T-060). correspondence_history
+    # matches on address-OR-domain, so reusing one of those would let this
+    # test's assertions pass on pre-existing fixture mail alone, proving
+    # nothing about the seed call this test actually makes (Qodo, PR #64
+    # review, "Seed lookup matches stale mail").
+    address = "seed-proof@t022-live-check.example"
+    domain = "t022-live-check.example"
+    send_body = json.dumps(
+        {
+            "From": {"Email": address, "Name": "Live Check"},
+            "To": [{"Email": "employee@universal-imports.example"}],
+            "Subject": "correspondence_history live-check seed",
+            "Text": "seeded directly for test_correspondence_history_finds_a_message_seeded_directly_into_mailpit",
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{MAILPIT_HTTP}/api/v1/send",
+        data=send_body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10):
+        pass
+
+    tools, result = call_tool(
+        running_server, "correspondence_history", {"address": address, "domain": domain}
+    )
+
+    assert "correspondence_history" in [t.name for t in tools.tools]
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload["prior_contact_count"] >= 1
+    assert payload["domains_used"] == [domain]
+    assert payload["first_seen"] is not None
+    assert payload["last_seen"] is not None
 
 
 # NOTE (T-033, Qodo PR #40 finding #3): there is deliberately NO live
