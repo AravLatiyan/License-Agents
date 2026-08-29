@@ -18,6 +18,20 @@ body {
   margin-bottom: 24px;
 }
 
+/* T-039: which source is feeding the app. Worth showing rather than hiding —
+   a judge watching the demo should be able to tell a real TrueForge run from
+   fixture playback at a glance, and so should we while debugging. */
+.cockpit__source {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-right: 6px;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* Visually hidden but still reachable by assistive tech - standard pattern,
    not `display: none`/`visibility: hidden` (those remove it from the
    accessibility tree too). */

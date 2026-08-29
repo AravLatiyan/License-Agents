@@ -44,3 +44,38 @@ npm run build    # tsc -b && vite build — type-checks contracts/events.ts too
 
 `contracts/fixtures/mission-happy-path.json` represents all four licence
 gates as granted (§6, 2026-08-26) — there is no deny case to render yet.
+
+## Live TrueForge source (T-039)
+
+`src/trueForgeSource.ts` is the `trueForgeEventSource` this README and
+`missionSource.ts` have both named as the intended swap-in since T-050. It opens
+a real session and streaming turn over TrueForge's HTTP/SSE API and feeds every
+raw wire event through the T-037 translator (`harness/translate/`), which is the
+only thing that knows how TrueForge's 12 generic event types map onto this app's
+`mission.*` vocabulary.
+
+**It is opt-in, not the default.** With no environment set, the app plays the
+fixture exactly as before — a clean clone with no server running must still show
+the full mission (rule 5 / T-065), and §17's demo depends on that fallback.
+
+```bash
+VITE_TRUEFORGE_URL=http://localhost:8790/api/v1 \
+VITE_TRUEFORGE_INPUT="$(cat ../tools/fixtures/01-credential-phish.eml)" \
+npm run dev
+```
+
+`VITE_TRUEFORGE_AGENT` defaults to `universal-imports`, the name
+`harness/agent.json` registers. The status line shows which source is active.
+
+**Two things it deliberately does not do**, both because the evidence for them
+does not exist yet:
+
+- **No reconnect/resume.** `resumableStream.ts` (T-056) is built, tested and
+  ready, but resuming needs an `after_sequence_number` cursor and nothing in
+  TrueForge's OpenAPI spec publishes a sequence number on any event body or list
+  wrapper — event `id` is a monotonic ULID string. The cursor is most likely the
+  SSE `id:` frame field, which cannot be confirmed without watching one live
+  turn. `parseSseFrames` already surfaces each frame's `id`, so wiring resume is
+  small once that is observed (PLAN.md §8).
+- **No approval submission.** Posting `user.tool_approval` back is T-036's live
+  half and belongs to the Allow/Deny buttons, not to a read-only event source.
