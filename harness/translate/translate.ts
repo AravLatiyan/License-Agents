@@ -87,6 +87,14 @@ function isTurnCancelledReason(v: unknown): v is TurnCancelledReason {
 interface PendingCall {
   name: string;
   argumentsJson: string;
+  /** Id of the `model.message` event that requested this call. A
+   *  `ToolCallRef` names both `id` and `source_event_id`, and resolution must
+   *  match BOTH: tool-call ids are only unique within the message that issued
+   *  them, so joining on `id` alone lets a stale or reused id from an earlier
+   *  message supply the name and arguments for this gate. That would show a
+   *  human one action while approving another — the exact failure this whole
+   *  licence mechanism exists to prevent (Qodo, PRs #73/#74). */
+  sourceEventId: string;
 }
 
 /** Pull the spoken text out of a turn.done `output`. `output.content` may be
@@ -130,6 +138,10 @@ export function createTranslator(options: TranslatorOptions): Translator {
   function handleModelMessage(raw: Record<string, unknown>): MissionEvent[] {
     const toolCalls = raw.tool_calls;
     if (!isArr(toolCalls)) return [];
+    // The event's own id is what a later ToolCallRef.source_event_id points
+    // back to, so it has to be remembered alongside each call.
+    const sourceEventId = raw.id;
+    if (!isStr(sourceEventId)) return [];
     for (const call of toolCalls) {
       if (!isRecord(call)) continue;
       const id = call.id;
@@ -138,7 +150,7 @@ export function createTranslator(options: TranslatorOptions): Translator {
       const name = fn.name;
       const args = fn.arguments;
       if (!isStr(name) || !isStr(args)) continue;
-      pendingCalls.set(id, { name, argumentsJson: args });
+      pendingCalls.set(id, { name, argumentsJson: args, sourceEventId });
     }
     // model.message never itself becomes a mission event - it only feeds the
     // pendingCalls memory that tool.approval_required/tool.response read.
@@ -154,10 +166,18 @@ export function createTranslator(options: TranslatorOptions): Translator {
       // ToolCallRef is {id, source_event_id} only (T-037 correction) - no
       // name or arguments here. Resolve both from the model.message that
       // requested this call, recorded earlier under the same id.
-      if (!isRecord(call) || !isStr(call.id)) continue;
+      if (!isRecord(call) || !isStr(call.id) || !isStr(call.source_event_id)) continue;
       const toolCallId = call.id;
       const pending = pendingCalls.get(toolCallId);
       if (!pending) continue; // no matching model.message seen - can't resolve, so can't gate it
+      if (pending.sourceEventId !== call.source_event_id) {
+        // The ref points at a different model.message than the one this id
+        // was recorded from. Resolving anyway would let a stale or reused
+        // tool-call id put the wrong tool name and arguments in front of the
+        // human granting the licence. Fail closed: no gate is better than a
+        // mislabelled one (Qodo, PRs #73/#74).
+        continue;
+      }
 
       const name = pending.name;
       if (!isGatedActionName(name)) continue; // only the four gated actions become a licence gate; everything else is skipped
