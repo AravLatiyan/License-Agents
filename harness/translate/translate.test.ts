@@ -223,11 +223,34 @@ test("tool.response for parse_message -> mission.message_received", () => {
   const translator = createTranslator({ missionId: MISSION_ID });
   translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "parse_message", {})]));
 
-  const parsed = { message_id: "m1", from: "a@example.com", reply_to: null, return_path: null };
+  const parsed = {
+    message_id: "m1",
+    from: "a@example.com",
+    reply_to: null,
+    return_path: null,
+    display_name: null,
+    authentication_results: "",
+    received_chain: [],
+    urls: [],
+    attachments: [],
+  };
   const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify(parsed)));
 
   assert.equal(result.length, 1);
   assert.deepEqual(result[0], { type: "mission.message_received", mission_id: MISSION_ID, message: parsed });
+});
+
+test("tool.response for parse_message with a malformed payload -> [] instead of a bogus mission event", () => {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "parse_message", {})]));
+
+  // Missing every ParsedMessage field except message_id/from - parses as
+  // JSON, but is not a well-formed ParsedMessage (Qodo, PR #73 finding #1).
+  const result = translator.push(
+    toolResponse("evt-2", "main", "call-1", JSON.stringify({ message_id: "m1", from: "a@example.com" })),
+  );
+
+  assert.deepEqual(result, []);
 });
 
 test("tool.response for domain_intel -> mission.evidence in the infrastructure lane", () => {
