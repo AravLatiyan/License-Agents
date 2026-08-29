@@ -101,7 +101,7 @@ LAST UPDATED: 2026-08-30 02:54 · **§11 backlog cleanup — removed 5 stale "st
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-039 | O1 | 2026-08-30 03:04 IST | **2h** | Ship the SSE transport + translator wiring without the reconnect-resume path (whose cursor source is still unverified, §8), and hand the resume half to a session that has a live turn to observe. Do NOT guess the cursor |
 
 > Note (2026-08-30 02:07, O3 cross-owner sync): T-037 (the previous row) is done and merged (§4) — cleared on completion. Ran ~2h28min against its 2h box (started 23:39, PR #74 merged 02:06) — over, but the four PRs it took (§4) were still in active, productive Qodo-fix cycles the whole time, not stuck; noted rather than silently ignored.
 
@@ -502,6 +502,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 3 — the product (Day 3) ← *everything after this is cuttable* — *(empty; T-032 lives in §2, flagged blocked, not duplicated here)*
 
+- **T-039** [O1, cockpit integration disclosed to O3] `trueForgeEventSource` — connect the cockpit to the T-037 translator over TrueForge's real HTTP/SSE API, replacing fixture playback on the live path. **T-037 built a translator nothing consumes**: `App.tsx` still feeds the UI from `mission-happy-path.json`, and `trueForgeEventSource` exists only in docstrings. Unblocks T-036's live Allow/Deny half and T-055's blocker #5, and is what makes §17's demo a real run rather than a recording. Needs no model credits to build — only the final end-to-end run does
 - **T-038** [O1] Resolve the `return_path` drift between `harness/agent.json` and `contracts/events.ts` — `agent.json` tells IDENTITY to report `return_path`; `IdentityEvidence` has no such field. **PLAN.md contradicts itself about which is right** (§4's T-024 Qodo-pass entry defends keeping it; §7's entry the same day logs its inclusion as the error), so the decision needs a human, not a guess. `harness/README.md:92`'s "matches `IdentityEvidence` exactly" claim is false today either way. Independent of T-037: with identity evidence now represented by absence (§6), the field list never reaches the wire. **Re-checked 2026-08-30: still true** — `IdentityEvidence` (`contracts/events.ts`) has exactly `from_address`/`display_name`/`reply_to`/`lookalike_domain`/`lookalike_of`, no `return_path`, even after T-037's own contract edits — genuinely untouched, not stale
 
 > Note (2026-08-30, cross-owner cleanup): **T-037 removed — done and merged into `main` (§4, PR #71/#75/#74, 2026-08-30) — was sitting here duplicated three times over, listed as if still pending long after it had actually shipped.** Verified directly before removing, not assumed: `harness/translate/translate.ts` exists on `main`, `harness/` test count is 78/78 (up from 19, the T-037 suite's own addition), §4 carries the full merged writeup. Still genuinely unwired to anything live per that same §4 entry — no code calls `createTranslator`/`resolveGate` yet, since Cockpit has no live TrueForge connection — but that's a *different*, real, still-open gap (feeding T-055's own blocker in §5), not a reason to keep listing T-037 itself as backlog. T-038 (the other task that was interleaved with the three duplicate copies) is unaffected and stays here, re-verified still accurate above.
