@@ -135,6 +135,53 @@ def test_notify_impersonated_delivers_into_mailpit(running_server):
     )
 
 
+@pytest.mark.skipif(
+    not RUN_LIVE_MAILPIT_TESTS,
+    reason="needs the T-060 Range running (`docker compose up` in range/) to seed a real "
+    "message and query it back over Mailpit's HTTP API - opt in with RUN_LIVE_MAILPIT_TESTS=1; "
+    "the deterministic matching/degradation behaviour is already covered by the mocked tests "
+    "in test_correspondence_history.py",
+)
+def test_correspondence_history_finds_a_message_seeded_directly_into_mailpit(running_server):
+    """Seeds one message straight into Mailpit via its own HTTP API (T-022) -
+    the same /api/v1/send endpoint range/seed.sh uses, no IMAP anywhere -
+    then confirms correspondence_history actually finds it back, proving
+    the real Mailpit integration end to end, not just the mocked unit tests.
+    """
+    import urllib.request
+
+    address = "live-check@northgate-trust.example"
+    domain = "northgate-trust.example"
+    send_body = json.dumps(
+        {
+            "From": {"Email": address, "Name": "Live Check"},
+            "To": [{"Email": "employee@universal-imports.example"}],
+            "Subject": "correspondence_history live-check seed",
+            "Text": "seeded directly for test_correspondence_history_finds_a_message_seeded_directly_into_mailpit",
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{MAILPIT_HTTP}/api/v1/send",
+        data=send_body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10):
+        pass
+
+    tools, result = call_tool(
+        running_server, "correspondence_history", {"address": address, "domain": domain}
+    )
+
+    assert "correspondence_history" in [t.name for t in tools.tools]
+    assert not result.is_error
+    payload = json.loads(result.content[0].text)
+    assert payload["prior_contact_count"] >= 1
+    assert payload["domains_used"] == [domain]
+    assert payload["first_seen"] is not None
+    assert payload["last_seen"] is not None
+
+
 # NOTE (T-033, Qodo PR #40 finding #3): there is deliberately NO live
 # file_abuse_report test here. Calling that tool over the wire performs a real
 # RDAP lookup against the production rdap.org service, which is third-party

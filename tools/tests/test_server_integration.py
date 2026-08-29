@@ -50,6 +50,18 @@ def test_url_reputation_empty_url_returns_error_over_the_wire(running_server):
     assert result.is_error
 
 
+def test_correspondence_history_empty_address_returns_error_over_the_wire(running_server):
+    _, result = call_tool(running_server, "correspondence_history", {"address": "", "domain": "example.com"})
+    assert result.is_error
+
+
+def test_correspondence_history_empty_domain_returns_error_over_the_wire(running_server):
+    _, result = call_tool(
+        running_server, "correspondence_history", {"address": "a@example.com", "domain": ""}
+    )
+    assert result.is_error
+
+
 def test_detonate_empty_url_returns_error_over_the_wire(running_server):
     _, result = call_tool(running_server, "detonate", {"url": ""})
     assert result.is_error
