@@ -188,9 +188,47 @@ def _crtsh_cache_get(domain: str) -> dict[str, Any] | None:
         return None
     cached_at, result_json = rows[0]
     if time.time() - cached_at >= CRTSH_CACHE_TTL_SECONDS:
-        _crtsh_db_execute("DELETE FROM crtsh_cache WHERE domain = ?", (domain,))
+        # Matched against the exact (cached_at, result) just read, not an
+        # unconditional delete-by-domain (Qodo review, PR #84 follow-up,
+        # found while testing the corrupt-JSON case below - the identical
+        # race exists here too): a concurrent call for the same domain
+        # could have already written a fresh entry in the gap between this
+        # SELECT and the DELETE, which an unconditional delete would
+        # discard along with the genuinely expired row.
+        _crtsh_db_execute(
+            "DELETE FROM crtsh_cache WHERE domain = ? AND cached_at = ? AND result = ?",
+            (domain, cached_at, result_json),
+        )
         return None
-    return json.loads(result_json)
+    try:
+        result = json.loads(result_json)
+    except (ValueError, TypeError):
+        # A truncated write, manual edit, or future schema change can leave
+        # a row whose `result` column isn't valid JSON - this cache is a
+        # performance optimization, not a correctness-critical store, the
+        # same "degrade instead of raising" contract _crtsh_db_execute()
+        # already holds SQLite errors to (Qodo review, PR #81: this one
+        # decode step was the gap that contract didn't actually cover).
+        # Drop the bad row so it doesn't keep failing on every lookup -
+        # matched against the exact (cached_at, result) just read (Qodo
+        # review, PR #84 follow-up), not an unconditional delete-by-domain:
+        # imports-mcp doesn't serialize requests, so a concurrent call for
+        # the same domain could have already written a fresh, valid entry
+        # in the gap between this SELECT and the DELETE - an unconditional
+        # delete would discard that fresh write too, not just the corrupt
+        # row this function actually read.
+        _crtsh_db_execute(
+            "DELETE FROM crtsh_cache WHERE domain = ? AND cached_at = ? AND result = ?",
+            (domain, cached_at, result_json),
+        )
+        return None
+    if not isinstance(result, dict):
+        _crtsh_db_execute(
+            "DELETE FROM crtsh_cache WHERE domain = ? AND cached_at = ? AND result = ?",
+            (domain, cached_at, result_json),
+        )
+        return None
+    return result
 
 
 def _crtsh_cache_set(domain: str, result: dict[str, Any]) -> None:
