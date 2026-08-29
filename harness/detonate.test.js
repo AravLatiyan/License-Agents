@@ -78,6 +78,20 @@ function startFixtureServer() {
       res.end("x".repeat(1000));
       return;
     }
+    // A genuine A<->B redirect loop (T-041, "redirect loop" error path) -
+    // distinct from the existing "long chain of distinct URLs" coverage:
+    // this never reaches a terminal response on its own, so the only thing
+    // that can stop it is detonate()'s own MAX_REDIRECT_HOPS cap.
+    if (req.url === "/loop-a") {
+      res.writeHead(302, { Location: "/loop-b" });
+      res.end();
+      return;
+    }
+    if (req.url === "/loop-b") {
+      res.writeHead(302, { Location: "/loop-a" });
+      res.end();
+      return;
+    }
     res.writeHead(404);
     res.end();
   });
@@ -170,6 +184,28 @@ test("malformed redirect Location returns a structured error, not a throw", asyn
     const result = await detonate(`http://127.0.0.1:${port}/bad-redirect`, { allowPrivateNetworkTargets: true });
     assert.ok(result.error, "expected a structured error, got: " + JSON.stringify(result));
     assert.equal(result.redirect_chain.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+// T-041 (error paths): a genuine A<->B redirect loop, not just a long chain
+// of distinct URLs (the existing tests above never actually loop back) -
+// this had no direct regression test even though MAX_REDIRECT_HOPS already
+// covers it, so the hop cap's loop-termination behavior was unverified.
+test("redirect loop terminates via the hop cap instead of hanging", async () => {
+  const server = await startFixtureServer();
+  const { port } = server.address();
+  try {
+    const result = await detonate(`http://127.0.0.1:${port}/loop-a`, { allowPrivateNetworkTargets: true });
+    assert.match(result.error, /redirect chain exceeded \d+ hops/);
+    // Exactly MAX_REDIRECT_HOPS (10) entries recorded before giving up - a
+    // real bound, not an unbounded chain that happened to be cut off late.
+    assert.equal(result.redirect_chain.length, 10);
+    assert.ok(
+      result.redirect_chain.every((hop) => hop.url.endsWith("/loop-a") || hop.url.endsWith("/loop-b")),
+      "every recorded hop should be part of the loop, not something else",
+    );
   } finally {
     server.close();
   }
