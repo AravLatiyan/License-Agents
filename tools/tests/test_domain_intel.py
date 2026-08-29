@@ -263,6 +263,76 @@ def test_corrupt_cached_json_degrades_to_a_cache_miss_not_a_raise(mock_get):
     assert mock_get.call_count == 2  # RDAP + crt.sh - genuinely re-fetched, not crashed
 
 
+def test_concurrent_write_between_read_and_cleanup_delete_is_not_lost(monkeypatch):
+    """Qodo review, PR #84 follow-up: the corrupt-row cleanup DELETE was
+    unconditional (WHERE domain = ?) - imports-mcp opens a fresh SQLite
+    connection per _crtsh_db_execute() call and never serializes requests
+    (module docstring), so a *different*, concurrent domain_intel() call
+    for the same domain could genuinely finish its own crt.sh fetch and
+    write a fresh, valid entry in the real gap between this function's own
+    SELECT and its cleanup DELETE - an unconditional delete would discard
+    that fresh write too, not just the corrupt row actually read."""
+    domain = "race.example"
+    db_path = domain_intel_module._crtsh_cache_db_path()
+    stale_cached_at = time.time()  # recent - exercises the JSON-decode path
+    # below, not the (separately fixed/tested) TTL-expiry path, which would
+    # otherwise fire first
+    fresh_cached_at = stale_cached_at + 100
+    fresh_result = {"available": True}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS crtsh_cache "
+            "(domain TEXT PRIMARY KEY, cached_at REAL NOT NULL, result TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO crtsh_cache (domain, cached_at, result) VALUES (?, ?, ?)",
+            (domain, stale_cached_at, "{not valid json"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    real_execute = domain_intel_module._crtsh_db_execute
+
+    def _racing_execute(query, params=()):
+        result = real_execute(query, params)
+        if query.startswith("SELECT"):
+            # Land a concurrent write in the exact gap between this
+            # function's own SELECT (just above) and the cleanup DELETE
+            # that's about to run next.
+            fresh_conn = sqlite3.connect(db_path)
+            try:
+                fresh_conn.execute(
+                    "INSERT INTO crtsh_cache (domain, cached_at, result) VALUES (?, ?, ?) "
+                    "ON CONFLICT(domain) DO UPDATE SET cached_at = excluded.cached_at, "
+                    "result = excluded.result",
+                    (domain, fresh_cached_at, json.dumps(fresh_result)),
+                )
+                fresh_conn.commit()
+            finally:
+                fresh_conn.close()
+        return result
+
+    monkeypatch.setattr(domain_intel_module, "_crtsh_db_execute", _racing_execute)
+
+    result = domain_intel_module._crtsh_cache_get(domain)
+
+    assert result is None  # the corrupt row this call actually read
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT cached_at, result FROM crtsh_cache WHERE domain = ?", (domain,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "the concurrently-written fresh entry was wrongly deleted"
+    assert row[0] == fresh_cached_at
+    assert json.loads(row[1]) == fresh_result
+
+
 @patch("imports_mcp.domain_intel.sqlite3.connect")
 @patch("imports_mcp.domain_intel.requests.get")
 def test_locked_cache_database_degrades_instead_of_raising(mock_get, mock_connect):
