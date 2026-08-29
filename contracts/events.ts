@@ -2,8 +2,18 @@
 //
 // Shared contract between the harness (O1), tools (O2), and Cockpit (O3).
 // Layer 1: TrueForge's wire-level approval/session schema, confirmed live
-// in T-002 (PLAN.md §6). Layer 2: MissionEvent, one variant per §10
-// architecture stage, which is what T-050/T-036 bind to.
+// in T-002 (PLAN.md §6) and re-verified field-by-field against a running
+// server's own openapi.json in T-037 (2026-08-29). Layer 2: MissionEvent,
+// one variant per §10 architecture stage, which is what T-050/T-036 bind to.
+//
+// The two layers are NOT the same vocabulary and never map one-to-one.
+// TrueForge's turn stream is a closed union of 12 generic event types
+// (turn.created/done, thread.created/done, model.message[.delta],
+// tool.response, tool.approval_required, tool.response_required,
+// mcp.initialize, mcp.auth_required, sandbox.created) with a `type`
+// discriminator — there is no extension point for an agent to emit a
+// `mission.*` event of its own. `mission.*` is therefore always produced by
+// translating the raw stream on our side, never by the agent (T-037).
 //
 // MAINTENANCE (Qodo finding #6, T-016 remediation, 2026-08-26):
 // - Shape source of truth is the actual producer code — harness/detonate.js
@@ -25,10 +35,44 @@
 // 1. TrueForge wire-level primitives (T-002, PLAN.md §6)
 // ---------------------------------------------------------------------------
 
-export interface ToolCallRequest {
+/**
+ * A tool call awaiting a decision, exactly as `tool.approval_required`
+ * carries it (TrueForge schema `ToolCallRef`, both fields required).
+ *
+ * CORRECTED T-037, 2026-08-29. This was previously declared as a
+ * `ToolCallRequest` with `tool_name` and an `arguments` object — a shape
+ * TrueForge has never emitted. `ToolCallRequest` is not a schema name
+ * TrueForge defines at all; the drift was written from PLAN.md prose rather
+ * than the producer, the same class of bug Qodo caught once already on
+ * `DomainIntel` (§8, 2026-08-27), and the file's own MAINTENANCE note
+ * above is the rule it broke.
+ *
+ * The approval event deliberately does NOT repeat the name or the
+ * arguments. To recover them, follow `source_event_id` back to the
+ * `model.message` that requested the call and match `id` against its
+ * `tool_calls[].id` — see ModelMessageToolCall. A consumer that needs the
+ * human-readable request should read `ApprovalRequiredEvent.action`
+ * instead, which is exactly that resolved pair.
+ */
+export interface ToolCallRef {
   id: string;
-  tool_name: string;
-  arguments: Record<string, unknown>;
+  /** Event id of the `model.message` that requested this tool call. */
+  source_event_id: string;
+}
+
+/**
+ * One tool call as it appears on a `model.message` event — the only place
+ * the name and arguments are actually published.
+ *
+ * `arguments` is a **JSON-encoded string**, not an object: TrueForge passes
+ * the model's raw function-call arguments through verbatim. Parsing it can
+ * fail on a malformed model output, so a consumer parses defensively rather
+ * than assuming it is well-formed.
+ */
+export interface ModelMessageToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
 }
 
 /** SSE from POST /sessions/{id}/turns when a gated tool call needs a decision. */
@@ -37,7 +81,7 @@ export interface ToolApprovalRequiredEvent {
   id: string;
   created_at: string; // ISO 8601
   thread_id: string;
-  tool_calls: ToolCallRequest[];
+  tool_calls: ToolCallRef[];
 }
 
 export type ApprovalStatus = "allow" | "deny";
@@ -49,6 +93,18 @@ export interface ToolApprovalResume {
   tool_call_id: string;
   approval: { status: ApprovalStatus; reason?: string };
 }
+
+/**
+ * Why a turn was cancelled. Exactly TrueForge's `TurnStateCancelledReason`
+ * enum, verified against a running server's openapi.json (T-037) — not a
+ * paraphrase, and deliberately not collapsed to free text: `abandoned` and
+ * `client-cancelled` mean different things to a human reading the cockpit.
+ */
+export type TurnCancelledReason =
+  | "server-execution-timeout"
+  | "client-cancelled"
+  | "cancelled-for-next-turn"
+  | "abandoned";
 
 /** Reconnects use GET /turns/{id}/subscribe?after_sequence_number=N */
 export interface TurnStreamSubscription {
@@ -95,8 +151,27 @@ export interface CorrespondenceHistory {
   domains_used: string[];
 }
 
-/** §10's IDENTITY lane has no dedicated tool — derived from ParsedMessage
- *  fields. Worded from the diagram text; see §8 (needs O1/O2 confirmation). */
+/**
+ * §10's IDENTITY lane has no dedicated tool — derived from ParsedMessage
+ * fields. Worded from the diagram text; see §8 (needs O1/O2 confirmation).
+ *
+ * NO PRODUCER EXISTS for `lookalike_domain`/`lookalike_of` (T-037, verified
+ * against every module in tools/imports_mcp). When they have not been
+ * computed, a translator MUST NOT emit this event with `lookalike_domain:
+ * false` — both cockpit render sites turn that into the words "No lookalike
+ * domain detected", asserting a clean security finding nothing ever checked.
+ *
+ * The supported representation of "not determined" is **absence**: emit no
+ * `mission.evidence` event for this lane at all. An empty lane is an
+ * already-handled, already-tested state (cockpit commit f9a19bd, T-052) and
+ * renders as "Waiting…"/"Nothing reported", which is honest. Note also that
+ * widening `lookalike_domain` to `boolean | null` would NOT help — `null` is
+ * falsy, so both render sites take the identical branch and print the same
+ * false negative.
+ *
+ * `from_address`/`display_name`/`reply_to` are not lost by that absence:
+ * they already reach the cockpit on `mission.message_received`'s ParsedMessage.
+ */
 export interface IdentityEvidence {
   from_address: string;
   display_name: string | null;
@@ -193,8 +268,22 @@ export interface ProposedAction {
   arguments: Record<string, unknown>;
 }
 
-/** T-036's LICENCE REQUIRED panel binds to this. Carries the real
- *  ToolApprovalRequiredEvent inline. Four sequential gates (§6, 2026-08-24). */
+/**
+ * T-036's LICENCE REQUIRED panel binds to this. Four sequential gates
+ * (§6, 2026-08-24).
+ *
+ * `action` is the human-readable request — the resolved tool name and its
+ * decoded arguments — and is what a panel should display. `approval` is the
+ * raw wire event kept verbatim for provenance; since T-037 corrected it to
+ * the real schema, its `tool_calls` carry only `{id, source_event_id}` and
+ * are NOT displayable on their own.
+ *
+ * `gate_index`/`gate_count` are our semantics, not TrueForge's: nothing in
+ * the turn stream numbers approvals. A translator assigns them by arrival
+ * order. `gate_count: 4` therefore encodes §10/§17's four-gate design, and
+ * a run that proposes a different number of actions does not fit this shape
+ * — deliberately left as-is pending a decision, not silently widened (T-037).
+ */
 export interface ApprovalRequiredEvent {
   type: "mission.approval_required";
   mission_id: string;
@@ -226,6 +315,47 @@ export interface MissionCompleteEvent {
   spoken_verdict: string; // §17 2:40-3:00 — Web Speech API text (T-043)
 }
 
+/**
+ * A turn that ended without completing. Added in T-037 because nothing else
+ * could carry it honestly: `VerdictLabel` is a closed
+ * malicious|suspicious|legitimate union, so a crash is not expressible as a
+ * verdict, and `mission.complete` means finished and carries the
+ * `spoken_verdict` T-043 reads aloud. Without this variant the cockpit's
+ * `missionDone` (derived solely from `mission.complete`) never becomes true
+ * on a failed turn and every stage renders as in-progress forever.
+ *
+ * Scope is deliberately *terminal turn failure only* — `TurnDoneEvent.state`
+ * has exactly three members and one of them is success, which is why `cause`
+ * has exactly two values. It is NOT a general error channel: a subagent's
+ * `ThreadStateError` and a model `refusal`/`content_filter` both occur inside
+ * a turn that still reaches `turn.done` normally, so neither leaves the
+ * mission unterminated, and both are already handled as evidence quality by
+ * agent.json's T-041 instruction. They are not force-fitted here.
+ *
+ * Each branch carries the field its own producer actually publishes, rather
+ * than one shared `message`: TrueForge's `TurnStateError` has a required
+ * `message` string, while `TurnStateCancelled` has no message at all — only a
+ * required four-value `reason` enum. Collapsing both into one string would
+ * have meant synthesising text and discarding that enum, which is the exact
+ * drift class T-037 exists to correct.
+ */
+export type MissionFailedEvent =
+  | {
+      type: "mission.failed";
+      mission_id: string;
+      cause: "error";
+      /** TrueForge TurnStateError.message — required there, always present. */
+      message: string;
+    }
+  | {
+      type: "mission.failed";
+      mission_id: string;
+      cause: "cancelled";
+      /** TrueForge TurnStateCancelled.reason — required there. No message
+       *  field exists on that state, so none is invented here. */
+      reason: TurnCancelledReason;
+    };
+
 export type MissionEvent =
   | MessageReceivedEvent
   | EvidenceEvent
@@ -234,4 +364,5 @@ export type MissionEvent =
   | ApprovalRequiredEvent
   | ApprovalResolvedEvent
   | ActionExecutedEvent
-  | MissionCompleteEvent;
+  | MissionCompleteEvent
+  | MissionFailedEvent;

@@ -12,7 +12,9 @@ const ACTION_LABEL: Record<ProposedActionName, string> = {
  * T-036: the LICENCE REQUIRED panel (§17, 1:50-2:20) - four sequential
  * per-tool-call gates, not one modal with four checkboxes (§6, 2026-08-24).
  * Each card mirrors what TrueForge's own native approval UI already shows
- * for a gated tool call - the literal JSON request - in our styling, same
+ * for a gated tool call - the literal JSON request, which since T-037 means
+ * the resolved tool name and decoded arguments rather than the wire event's
+ * bare ToolCallRefs - in our styling, same
  * "configure it, don't rebuild it" relationship DetonationPanel/VerdictPanel
  * already have to their own data.
  *
@@ -51,8 +53,8 @@ function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates
   return (
     <li className={`approval-gate approval-gate--${status}`}>
       {/* A concise, textual live region separate from the visible card -
-          role="status" on the whole card would announce the entire raw
-          tool_calls JSON verbatim (and do so from four independent regions
+          role="status" on the whole card would announce the entire request
+          JSON verbatim (and do so from four independent regions
           at once) instead of a short state change (Qodo, PR #52 finding
           #3). This element carries only the short summary text; the JSON
           and visible UI below stay out of the live region entirely. */}
@@ -69,8 +71,16 @@ function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates
       {gate.request && (
         <>
           <p className="approval-gate__banner">LICENCE REQUIRED</p>
+          {/* T-037: the wire event's tool_calls are ToolCallRef - {id,
+              source_event_id} - so rendering them verbatim would show two
+              opaque ids, not the request. The literal request a judge needs
+              to read is the resolved tool name plus its decoded arguments. */}
           <pre className="approval-gate__request">
-            {JSON.stringify(gate.request.tool_calls, null, 2)}
+            {JSON.stringify(
+              { tool: gate.action ?? null, arguments: gate.requestArguments ?? {} },
+              null,
+              2,
+            )}
           </pre>
         </>
       )}
