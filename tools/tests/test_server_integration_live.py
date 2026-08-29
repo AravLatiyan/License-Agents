@@ -155,15 +155,24 @@ def test_correspondence_history_finds_a_message_seeded_directly_into_mailpit(run
     the real Mailpit integration end to end, not just the mocked unit tests.
     """
     import urllib.request
+    import uuid
 
-    # A domain/address seen nowhere else - not shared with any range/fixtures/
-    # sender (northgate-trust*/meridian-courier*/universal-imports* are all
-    # already heavily seeded by seed.sh, T-060). correspondence_history
-    # matches on address-OR-domain, so reusing one of those would let this
-    # test's assertions pass on pre-existing fixture mail alone, proving
-    # nothing about the seed call this test actually makes (Qodo, PR #64
+    # A domain seen nowhere else - not shared with any range/fixtures/ sender
+    # (northgate-trust*/meridian-courier*/universal-imports* are all already
+    # heavily seeded by seed.sh, T-060). correspondence_history matches on
+    # address-OR-domain, so reusing one of those would let this test's
+    # assertions pass on pre-existing fixture mail alone (Qodo, PR #64
     # review, "Seed lookup matches stale mail").
-    address = "seed-proof@t022-live-check.example"
+    #
+    # The *address* is further made unique per invocation, not just per
+    # fixture family - a fixed address would let a message left behind by an
+    # earlier run satisfy a later run's assertions even if that later run's
+    # own seed request silently failed, and would grow the mailbox
+    # correspondence_history paginates through on every unbounded run (Qodo,
+    # PR #72 review, "Live seed reuses stale identity"). Deleted in a
+    # `finally` below so repeated runs don't accumulate mailbox state either
+    # way.
+    address = f"seed-proof-{uuid.uuid4().hex[:12]}@t022-live-check.example"
     domain = "t022-live-check.example"
     send_body = json.dumps(
         {
@@ -179,20 +188,37 @@ def test_correspondence_history_finds_a_message_seeded_directly_into_mailpit(run
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10):
-        pass
+    with urllib.request.urlopen(request, timeout=10) as response:
+        seeded_message_id = json.loads(response.read())["ID"]
 
-    tools, result = call_tool(
-        running_server, "correspondence_history", {"address": address, "domain": domain}
-    )
+    try:
+        tools, result = call_tool(
+            running_server, "correspondence_history", {"address": address, "domain": domain}
+        )
 
-    assert "correspondence_history" in [t.name for t in tools.tools]
-    assert not result.is_error
-    payload = json.loads(result.content[0].text)
-    assert payload["prior_contact_count"] >= 1
-    assert payload["domains_used"] == [domain]
-    assert payload["first_seen"] is not None
-    assert payload["last_seen"] is not None
+        assert "correspondence_history" in [t.name for t in tools.tools]
+        assert not result.is_error
+        payload = json.loads(result.content[0].text)
+        # == 1, not >= 1: address is unique to this invocation, so exactly
+        # one message can ever match it - proving this run's own seed was
+        # found, not just that *some* message at this domain exists.
+        assert payload["prior_contact_count"] == 1
+        assert payload["domains_used"] == [domain]
+        assert payload["first_seen"] is not None
+        assert payload["last_seen"] is not None
+    finally:
+        # DELETE with a non-empty IDs list deletes only these messages -
+        # Mailpit's own spec: an *empty* IDs list deletes the entire
+        # mailbox instead (the same footgun quarantine.py's server.py
+        # boundary guards against), so this must never be left empty.
+        delete_request = urllib.request.Request(
+            f"{MAILPIT_HTTP}/api/v1/messages",
+            data=json.dumps({"IDs": [seeded_message_id]}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        with urllib.request.urlopen(delete_request, timeout=10):
+            pass
 
 
 # NOTE (T-033, Qodo PR #40 finding #3): there is deliberately NO live
