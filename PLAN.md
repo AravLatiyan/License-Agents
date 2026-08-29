@@ -418,9 +418,9 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-030** [O2] `quarantine` over IMAP
 - **T-032** [O2] `create_block_rule`
 
-> Note (2026-08-28, O1): T-031 removed — completed and merged into `main` (§4, PR #29), not just picked; it was an explicit, disclosed cross-owner takeover (§4 entry has the reasoning), not a reassignment of the rest of this list. T-030/T-032/T-033 untouched — still `[O2]`, still unstarted.
+> Note (2026-08-28, O1): T-031 removed — completed and merged into `main` (§4, PR #29), not just picked; it was an explicit, disclosed cross-owner takeover (§4 entry has the reasoning), not a reassignment of the rest of this list. T-030/T-032 untouched — still `[O2]`, still unstarted (T-033 was also untouched when this note was written; it has since been completed and merged — see §4 and the 2026-08-29 O1 note in this section).
 > Note (2026-08-29, O1): T-033 removed — completed and merged into `main` (§4, PR #40, `71107ad`), same disclosed cross-owner takeover as T-031, not a reassignment of the rest of this list. T-030/T-032 untouched — still `[O2]`, still unstarted; two of the four T-034 gate-target tools now exist.
-> Note (2026-08-29, O3): T-036 removed — picked into §2 NEXT UP (found sitting here unpicked while selecting O3's next task after T-056). Only its presentation half is unblocked (§2/§4/§8 have the full correction) — the live-submission half is blocked on the same undecided TrueForge→`mission.*` translation layer T-056 surfaced. T-030/T-032/T-033 untouched — still `[O2]`, still unstarted.
+> Note (2026-08-29, O3): T-036 removed — picked into §2 NEXT UP (found sitting here unpicked while selecting O3's next task after T-056). Only its presentation half is unblocked (§2/§4/§8 have the full correction) — the live-submission half is blocked on the same undecided TrueForge→`mission.*` translation layer T-056 surfaced. T-030/T-032 untouched — still `[O2]`, still unstarted (T-033 was also untouched when this note was written; it has since been completed and merged — see §4 and the 2026-08-29 O1 note in this section).
 
 ## Slice 4 — depth (Day 4)
 - **T-040** [O1] Session persistence + resume — campaign dossier survives a restart
