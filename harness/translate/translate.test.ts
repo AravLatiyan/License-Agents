@@ -878,3 +878,65 @@ test("the same wrong-type results are dropped for every producing tool", () => {
     assert.deepEqual(result, [], `an array result from ${tool} must not become a mission event`);
   }
 });
+
+// --- queued gates must not be lost when the turn terminates (O1 review, PR #73) ---
+
+/** Queue three gates behind one active gate, without resolving any. */
+function queueFourGates() {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  const actions: Array<[string, string]> = [
+    ["call-1", "quarantine"],
+    ["call-2", "notify_impersonated"],
+    ["call-3", "create_block_rule"],
+    ["call-4", "file_abuse_report"],
+  ];
+  const emitted: MissionEvent[] = [];
+  actions.forEach(([callId, name], i) => {
+    translator.push(modelMessage(`mm-${i}`, "main", [toolCall(callId, name, {})]));
+    emitted.push(...translator.push(approvalRequired(`appr-${i}`, "main", [ref(callId, `mm-${i}`)])));
+  });
+  // Serialisation means only the first gate is out; three are queued.
+  assert.equal(emitted.length, 1, "only one gate should be outstanding at a time");
+  return translator;
+}
+
+test("a terminal error releases gates still queued instead of dropping them", () => {
+  const translator = queueFourGates();
+  const out = translator.push(turnDone({ status: "error", message: "boom", completed_at: "t" }));
+
+  const gates = out.filter((e) => e.type === "mission.approval_required");
+  assert.equal(gates.length, 3, "the three queued gates must be released, not silently dropped");
+  assert.deepEqual(
+    gates.map((g) => (g as { gate_index: number }).gate_index),
+    [2, 3, 4],
+    "released in gate order",
+  );
+  assert.equal(out[out.length - 1].type, "mission.failed", "the terminal event comes last");
+});
+
+test("a cancelled turn also releases queued gates", () => {
+  const translator = queueFourGates();
+  const out = translator.push(turnDone({ status: "cancelled", reason: "abandoned", completed_at: "t" }));
+  assert.equal(out.filter((e) => e.type === "mission.approval_required").length, 3);
+  assert.equal(out[out.length - 1].type, "mission.failed");
+});
+
+test("a completed turn releases queued gates before mission.complete", () => {
+  const translator = queueFourGates();
+  const out = translator.push(
+    turnDone({ status: "done", required_actions: [], output: { type: "model.message", content: "done" }, completed_at: "t" }),
+  );
+  assert.equal(out.filter((e) => e.type === "mission.approval_required").length, 3);
+  assert.equal(out[out.length - 1].type, "mission.complete");
+});
+
+// The one case that must NOT flush: a turn ending *paused* is the harness
+// waiting on exactly these gates, so the queue is still live and a human
+// decision is still coming.
+test("a turn ending PAUSED does not flush the queue", () => {
+  const translator = queueFourGates();
+  const out = translator.push(
+    turnDone({ status: "done", required_actions: [{ type: "tool.approval_required" }], output: null, completed_at: "t" }),
+  );
+  assert.deepEqual(out, [], "a paused turn emits nothing and keeps its queue");
+});

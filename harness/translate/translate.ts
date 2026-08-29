@@ -354,6 +354,27 @@ export function createTranslator(options: TranslatorOptions): Translator {
     return out;
   }
 
+  /**
+   * Release every gate still waiting behind the active one.
+   *
+   * `resolveGate` is otherwise the queue's only drain, and it is driven by a
+   * consumer reacting to a human decision. Once a turn reaches a terminal
+   * state no further decision is coming, so anything left queued would be
+   * silently dropped and the cockpit would show FEWER licence gates than the
+   * agent actually requested. That is the worse failure: a missing LICENCE
+   * REQUIRED panel reads as an action nobody was asked to approve, which is
+   * precisely what this project exists to make visible. Releasing them late
+   * is honest; dropping them is not (O1 review of PR #73).
+   *
+   * Deliberately NOT called when a turn ends *paused* — a pause is the
+   * harness waiting on exactly these gates, so the queue is still live.
+   */
+  function flushQueuedGates(): MissionEvent[] {
+    activeGateIndex = null;
+    if (pendingGateQueue.length === 0) return [];
+    return pendingGateQueue.splice(0, pendingGateQueue.length);
+  }
+
   function resolveGate(gateIndex: 1 | 2 | 3 | 4): MissionEvent[] {
     if (activeGateIndex !== gateIndex) return []; // stale or already-resolved - nothing to release
     activeGateIndex = null;
@@ -470,7 +491,7 @@ export function createTranslator(options: TranslatorOptions): Translator {
       // but `raw` is unknown here, so still guard rather than assume.
       const message = isStr(state.message) ? state.message : "";
       const event: MissionFailedEvent = { type: "mission.failed", mission_id: missionId, cause: "error", message };
-      return [event];
+      return [...flushQueuedGates(), event];
     }
 
     if (status === "cancelled") {
@@ -492,10 +513,10 @@ export function createTranslator(options: TranslatorOptions): Translator {
           cause: "error",
           message: `turn cancelled with an unrecognised reason: ${described}`,
         };
-        return [event];
+        return [...flushQueuedGates(), event];
       }
       const event: MissionFailedEvent = { type: "mission.failed", mission_id: missionId, cause: "cancelled", reason };
-      return [event];
+      return [...flushQueuedGates(), event];
     }
 
     if (status === "done") {
@@ -512,7 +533,10 @@ export function createTranslator(options: TranslatorOptions): Translator {
       if (isPaused) return [];
 
       const spokenVerdict = extractOutputText(state.output);
-      return [{ type: "mission.complete", mission_id: missionId, spoken_verdict: spokenVerdict }];
+      return [
+        ...flushQueuedGates(),
+        { type: "mission.complete", mission_id: missionId, spoken_verdict: spokenVerdict },
+      ];
     }
 
     return []; // unrecognised status
