@@ -15,8 +15,10 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 import pytest
+import requests
 
 from imports_mcp.detonate import MAX_RESPONSE_BYTES, detonate
 
@@ -149,11 +151,19 @@ def test_malformed_start_url_returns_a_structured_error_not_a_raise():
     assert result["redirect_chain"] == []
 
 
-def test_connection_failure_returns_a_structured_error_not_a_raise(fixture_server):
-    # fixture_server fixture already tore the server down by the time this
-    # runs if we grab the port and shut it down ourselves instead - simplest
-    # is a port nothing is listening on at all.
-    result = detonate("http://127.0.0.1:1/start", allow_private_network_targets=True)
+def test_connection_failure_returns_a_structured_error_not_a_raise():
+    # Qodo (PR #38 review): hard-coding "port 1, surely nothing listens
+    # there" made this test dependent on ambient host network state - a
+    # host that actually serves something on port 1 would follow
+    # detonate()'s success path instead of the fetch-error path this test
+    # asserts. Mocking the request call to raise requests.ConnectionError
+    # exercises the same RequestException handling deterministically, with
+    # no real connection attempted at all - no fixture server needed here.
+    with patch(
+        "imports_mcp.detonate._get_without_proxy_trust",
+        side_effect=requests.ConnectionError("connection refused"),
+    ):
+        result = detonate("http://127.0.0.1/start", allow_private_network_targets=True)
     assert isinstance(result, dict)
     assert result["error"]
     assert result["redirect_chain"] == []
