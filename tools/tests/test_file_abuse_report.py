@@ -444,6 +444,25 @@ def test_guard_runs_before_the_rdap_lookup(mock_intel, monkeypatch):
 # --- regressions for the bounded DNS resolution (Qodo, via O3's T-041 review) --
 
 
+@pytest.fixture(autouse=True)
+def _fresh_dns_worker_slots(monkeypatch):
+    """Give every test in this module its own resolver-slot counter.
+
+    The hanging-resolver tests below deliberately abandon workers, and an
+    abandoned worker keeps its slot for the full 30s of its fake lookup. Shared
+    state would bleed those held slots into every later test in the session and
+    make them fail for a reason that has nothing to do with what they assert.
+    """
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(
+        _smtp,
+        "_dns_worker_slots",
+        threading.BoundedSemaphore(_smtp.MAX_INFLIGHT_DNS_WORKERS),
+    )
+
+
+
 def test_hanging_getaddrinfo_cannot_hang_the_resolver_indefinitely(monkeypatch):
     """The defect: `socket.getaddrinfo` is a blocking call into the platform
     resolver made *before* any socket exists, so `SMTP_TIMEOUT_SECONDS` never
@@ -564,3 +583,77 @@ def test_mixed_loopback_and_routable_answers_still_rejected(monkeypatch):
         ],
     )
     assert _smtp.resolve_range_target("rebind.example") is None
+
+
+def test_stalled_lookups_cannot_accumulate_workers_without_bound(monkeypatch):
+    """A timed-out lookup cannot be cancelled, so its worker outlives the call.
+    Without a cap those abandoned threads pile up on every retry until thread
+    creation itself fails (Qodo, PR #66) — `daemon=True` stops them delaying
+    shutdown but does not reclaim them.
+
+    Drives many more stalled lookups than the cap and asserts the live worker
+    count never exceeds it, and that the excess calls still fail closed.
+    """
+    import time
+    from imports_mcp import _smtp
+
+    cap = 2
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(cap))
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+
+    def live_workers():
+        return [
+            t for t in threading.enumerate()
+            if t.name.startswith(_smtp._DNS_WORKER_PREFIX)
+        ]
+
+    baseline = len(live_workers())
+    for _ in range(cap + 8):
+        assert _smtp.resolve_range_target("stalled.example") is None
+        assert len(live_workers()) - baseline <= cap, (
+            "abandoned resolver workers accumulated past the cap"
+        )
+
+    assert len(live_workers()) - baseline == cap, (
+        "expected the cap to be saturated by the stalled lookups"
+    )
+
+
+def test_a_completed_lookup_hands_its_slot_back(monkeypatch):
+    """The cap must bound *concurrent* workers, not total lookups: an ordinary
+    run resolves far more times than the cap and must never start refusing."""
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(
+        _smtp.socket, "getaddrinfo",
+        lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+
+    for _ in range(20):
+        assert _smtp.resolve_range_target("localhost") == "127.0.0.1"
+
+
+def test_saturated_slots_refuse_instead_of_queueing(monkeypatch):
+    """Saturation must fail closed immediately — not wait for a slot. Waiting
+    would reintroduce exactly the unbounded hang the timeout exists to stop."""
+    import time
+    from imports_mcp import _smtp
+
+    timeout = 2.0
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", timeout)
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+
+    assert _smtp.resolve_range_target("stalled.example") is None  # takes the slot
+
+    begin = time.monotonic()
+    assert _smtp.resolve_range_target("stalled.example") is None
+    elapsed = time.monotonic() - begin
+
+    # Generous margin on purpose: the point is that this call did not wait a
+    # whole `timeout` for the held slot, not that it returned in some exact time.
+    assert elapsed < timeout / 2, (
+        f"waited {elapsed:.2f}s for a slot — saturation must refuse, not queue"
+    )

@@ -38,6 +38,15 @@ DNS_TIMEOUT_SECONDS = 5
 # find the worker and assert it is a daemon.
 _DNS_WORKER_PREFIX = "smtp-dns-resolve"
 
+# Hard cap on resolver workers that are alive at once. A timed-out lookup
+# cannot be cancelled, so its worker outlives the call that started it; without
+# a cap, repeated stalls would pile up abandoned threads until thread creation
+# itself fails (Qodo, PR #66). `daemon=True` only stops them delaying shutdown
+# — it does not reclaim their runtime resources, so the count must be bounded
+# too. Saturation fails closed: no new worker, no send.
+MAX_INFLIGHT_DNS_WORKERS = 4
+_dns_worker_slots = threading.BoundedSemaphore(MAX_INFLIGHT_DNS_WORKERS)
+
 # The T-060 range (range/docker-compose.yml publishes 1025:1025, no auth).
 # These defaults are a safety property, not a convenience: with no .env and
 # no exported vars, these tools can only ever reach a local Mailpit.
@@ -167,9 +176,15 @@ def external_smtp_allowed() -> bool:
 def _getaddrinfo_bounded(host: str, timeout_seconds: float) -> list | None:
     """`socket.getaddrinfo(host, None)` with a bounded wait for the *caller*.
 
-    Returns the address list, or **None** on timeout, resolver error, or an
-    empty answer — one indistinguishable "could not resolve this" outcome, so
-    every failure mode reaches the same fail-closed path in the caller.
+    Returns the address list, or **None** on timeout, resolver error, an empty
+    answer, or no free worker slot — one indistinguishable "could not resolve
+    this" outcome, so every failure mode reaches the same fail-closed path in
+    the caller.
+
+    At most `MAX_INFLIGHT_DNS_WORKERS` lookups may be alive at once. An
+    abandoned worker holds its slot until its lookup finally returns, so a
+    stalled resolver degrades to immediate refusals rather than an unbounded
+    pile of blocked threads.
 
     Why a thread rather than a socket timeout: `getaddrinfo` is a blocking
     call into the platform resolver, made before any socket exists, so
@@ -186,6 +201,12 @@ def _getaddrinfo_bounded(host: str, timeout_seconds: float) -> list | None:
     set, or cleared here, and `detonate`'s thread-local semantics are
     untouched.
     """
+    # Refuse rather than pile up another abandoned worker when the cap is
+    # already taken. This is the fail-closed direction: under a stalled
+    # resolver the tool declines to send, it does not queue or wait.
+    if not _dns_worker_slots.acquire(blocking=False):
+        return None
+
     result: dict[str, Any] = {}
 
     def _worker() -> None:
@@ -196,11 +217,21 @@ def _getaddrinfo_bounded(host: str, timeout_seconds: float) -> list | None:
             # it must never escape this thread. socket.gaierror and
             # UnicodeError are both covered here (OSError/ValueError subclasses).
             result["error"] = True
+        finally:
+            # Released by the worker, not the caller: on timeout the caller has
+            # already returned, and the slot only genuinely frees when this
+            # lookup finally unblocks.
+            _dns_worker_slots.release()
 
     worker = threading.Thread(
         target=_worker, name=f"{_DNS_WORKER_PREFIX}-{host}", daemon=True
     )
-    worker.start()
+    try:
+        worker.start()
+    except RuntimeError:
+        # Could not create the thread at all — hand the slot back and refuse.
+        _dns_worker_slots.release()
+        return None
     worker.join(timeout_seconds)
 
     if worker.is_alive():
