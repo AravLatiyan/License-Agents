@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test detonate.test.js stub-mcp-server.test.js agent-config.test.js && node --experimental-strip-types --test translate/translate.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

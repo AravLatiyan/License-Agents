@@ -619,3 +619,85 @@ test("a cancellation with an unrecognised reason still terminates the mission", 
   if (event.cause !== "error") return;
   assert.match(event.message, /some-future-reason/, "the raw reason must be reported verbatim");
 });
+
+// Qodo found (PRs #73/#74) that the translator joined a ToolCallRef to its
+// model.message on tool-call id alone, ignoring source_event_id. Tool-call
+// ids are only unique within the message that issued them, so a stale or
+// reused id could put one action in front of the human while a different one
+// was actually approved. These tests fail against that behaviour.
+test("an approval whose source_event_id does not match the recorded message is refused", () => {
+  const translator = createTranslator({ missionId: "mission-001" });
+
+  translator.push({
+    type: "model.message",
+    id: "evt-real",
+    thread_id: "main",
+    tool_calls: [
+      { id: "call-1", type: "function", function: { name: "quarantine", arguments: '{"message_ids":["m1"]}' } },
+    ],
+  });
+
+  const events = translator.push({
+    type: "tool.approval_required",
+    id: "evt-approval",
+    created_at: "2026-08-30T00:00:00Z",
+    thread_id: "main",
+    // Same tool-call id, but pointing at a different model.message.
+    tool_calls: [{ id: "call-1", source_event_id: "evt-someone-else" }],
+  });
+
+  assert.deepEqual(events, [], "a mismatched source_event_id must not resolve to a gate");
+});
+
+test("an approval with no source_event_id is refused rather than resolved on id alone", () => {
+  const translator = createTranslator({ missionId: "mission-001" });
+
+  translator.push({
+    type: "model.message",
+    id: "evt-real",
+    thread_id: "main",
+    tool_calls: [
+      { id: "call-1", type: "function", function: { name: "quarantine", arguments: "{}" } },
+    ],
+  });
+
+  const events = translator.push({
+    type: "tool.approval_required",
+    id: "evt-approval",
+    created_at: "2026-08-30T00:00:00Z",
+    thread_id: "main",
+    tool_calls: [{ id: "call-1" }],
+  });
+
+  assert.deepEqual(events, [], "a ref without source_event_id cannot be safely resolved");
+});
+
+// The positive case: a matching pair still resolves, so the guard above is a
+// correctness check and not simply refusing everything.
+test("a matching source_event_id still resolves the gate normally", () => {
+  const translator = createTranslator({ missionId: "mission-001" });
+
+  translator.push({
+    type: "model.message",
+    id: "evt-real",
+    thread_id: "main",
+    tool_calls: [
+      { id: "call-1", type: "function", function: { name: "quarantine", arguments: '{"message_ids":["m1"]}' } },
+    ],
+  });
+
+  const events = translator.push({
+    type: "tool.approval_required",
+    id: "evt-approval",
+    created_at: "2026-08-30T00:00:00Z",
+    thread_id: "main",
+    tool_calls: [{ id: "call-1", source_event_id: "evt-real" }],
+  });
+
+  assert.equal(events.length, 1);
+  const event = events[0];
+  assert.equal(event.type, "mission.approval_required");
+  if (event.type !== "mission.approval_required") return;
+  assert.equal(event.action.action, "quarantine");
+  assert.deepEqual(event.action.arguments, { message_ids: ["m1"] });
+});
