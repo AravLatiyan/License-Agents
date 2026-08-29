@@ -9,6 +9,9 @@ manually against google.com and logged in PLAN.md.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+import tempfile
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
@@ -24,13 +27,19 @@ _NOW = datetime.now(timezone.utc)
 
 
 @pytest.fixture(autouse=True)
-def _clear_crtsh_cache():
-    """The cache is module-level and persists across tests; several tests
-    below reuse the same domain name, so a hit from an earlier test would
+def _isolated_crtsh_cache():
+    """T-045: the cache is now a SQLite file, not a module-level dict, so
+    isolation means a private file per test, not just clearing shared
+    state — otherwise a real crt.sh cache on disk (or two test runs in
+    parallel) could leak entries between tests the same way the old
+    in-memory dict could leak between tests in the same process. Also
+    covers the original reason this fixture existed: several tests below
+    reuse the same domain name, and a hit from an earlier test would
     otherwise silently mask what this test is actually checking."""
-    domain_intel_module._crtsh_cache.clear()
-    yield
-    domain_intel_module._crtsh_cache.clear()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test-crtsh-cache.sqlite3")
+        with patch.dict(os.environ, {"CRTSH_CACHE_DB_PATH": db_path}):
+            yield
 
 
 def _days_ago(n: int) -> str:
@@ -189,6 +198,37 @@ def test_crtsh_success_is_cached_across_calls(mock_get):
 
     # 2 RDAP calls (never cached) + 1 crt.sh call (cached after the first)
     assert mock_get.call_count == 3
+
+
+# --- T-045: the cache is SQLite now, not a module-level dict - the whole
+# point is surviving a process restart, so prove the entry is genuinely on
+# disk, not just consistent across calls in the same process (every test
+# above would pass identically against the old in-memory dict too). ---
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_crtsh_cache_entry_is_actually_persisted_to_the_sqlite_file(mock_get):
+    mock_get.side_effect = [_mock_response(200, RDAP_SUCCESS), _mock_response(200, CRTSH_SUCCESS)]
+    domain_intel("on-disk.example")
+
+    # Bypass the module entirely - a fresh, independent sqlite3 connection to
+    # the same file the test fixture pointed CRTSH_CACHE_DB_PATH at. If this
+    # were still the old in-memory dict, there would be no file for a second,
+    # unrelated connection to read data from at all.
+    conn = sqlite3.connect(domain_intel_module._crtsh_cache_db_path())
+    try:
+        row = conn.execute(
+            "SELECT domain, result FROM crtsh_cache WHERE domain = ?", ("on-disk.example",)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None, "expected the crt.sh result to be persisted to the sqlite file"
+    stored_domain, stored_result_json = row
+    assert stored_domain == "on-disk.example"
+    stored_result = json.loads(stored_result_json)
+    assert stored_result["available"] is True
+    assert stored_result["age_days"] is not None
 
 
 @patch("imports_mcp.domain_intel.requests.get")
