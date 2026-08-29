@@ -60,6 +60,17 @@ function stageOf(event: MissionEvent): StageId {
     case "mission.action_executed":
       return "gates";
     case "mission.complete":
+    // A failed turn is terminal, same as a completed one - the mission is
+    // over either way, so it maps to the same final stage. T-037 handoff:
+    // this case exists only because `stageOf` is an exhaustive switch and
+    // `MissionEvent` gained `mission.failed`.
+    //
+    // Deliberately the minimal wiring: `missionDone` below still derives
+    // only from `mission.complete`, so a FAILED mission leaves the evidence
+    // lanes rendering "Waiting..." rather than settling to "Nothing
+    // reported". Changing that is a real rendering decision in O3's file,
+    // beyond the two cases the union needed, so it is left for O3.
+    case "mission.failed":
       return "complete";
   }
 }
@@ -95,6 +106,13 @@ export function describeEvent(event: MissionEvent): string {
       return event.result_summary;
     case "mission.complete":
       return event.spoken_verdict;
+    // T-037 handoff: each branch reads the field its own TrueForge producer
+    // publishes - TurnStateError has a message, TurnStateCancelled has only
+    // a reason enum.
+    case "mission.failed":
+      return event.cause === "error"
+        ? `Mission failed: ${event.message}`
+        : `Mission cancelled: ${event.reason}`;
   }
 }
 

@@ -364,11 +364,5 @@ export type MissionEvent =
   | ApprovalRequiredEvent
   | ApprovalResolvedEvent
   | ActionExecutedEvent
-  | MissionCompleteEvent;
-// NOT YET IN THE UNION — deliberate, see MissionFailedEvent above.
-// `stageOf` and `describeEvent` in cockpit/src/missionPlan.ts are exhaustive
-// switches with no default, so adding `| MissionFailedEvent` here fails their
-// compilation (TS2366) until each gains a `case "mission.failed":`. That is
-// two lines in a file O3 owns, so the wiring is a disclosed handoff rather
-// than something this contract PR does unilaterally. Until it lands, the type
-// is defined and proven but nothing can emit it as a MissionEvent.
+  | MissionCompleteEvent
+  | MissionFailedEvent;
