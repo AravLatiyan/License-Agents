@@ -19,9 +19,24 @@ import json
 import os
 import re
 import socket
+import threading
 from typing import Any, Iterable
 
 SMTP_TIMEOUT_SECONDS = 10
+
+# Bounds the *name resolution* that happens before any socket exists.
+# `socket.setdefaulttimeout()` does NOT cover this: it governs operations on a
+# socket, while `getaddrinfo` is a blocking call into the platform resolver
+# made before one is created. So SMTP_TIMEOUT_SECONDS never applies to it, and
+# a stalled resolver could hang `file_abuse_report` indefinitely (Qodo, found
+# during O3's T-041 review of PR #58). Deliberately shorter than the SMTP
+# timeout: resolving the Range should be near-instant, and the whole point is
+# to give up early and refuse rather than wait.
+DNS_TIMEOUT_SECONDS = 5
+
+# Thread-name prefix for the bounded resolver's workers. Named so a test can
+# find the worker and assert it is a daemon.
+_DNS_WORKER_PREFIX = "smtp-dns-resolve"
 
 # The T-060 range (range/docker-compose.yml publishes 1025:1025, no auth).
 # These defaults are a safety property, not a convenience: with no .env and
@@ -149,6 +164,54 @@ def external_smtp_allowed() -> bool:
     return os.environ.get(ALLOW_EXTERNAL_SMTP_ENV, "").strip() == "1"
 
 
+def _getaddrinfo_bounded(host: str, timeout_seconds: float) -> list | None:
+    """`socket.getaddrinfo(host, None)` with a bounded wait for the *caller*.
+
+    Returns the address list, or **None** on timeout, resolver error, or an
+    empty answer — one indistinguishable "could not resolve this" outcome, so
+    every failure mode reaches the same fail-closed path in the caller.
+
+    Why a thread rather than a socket timeout: `getaddrinfo` is a blocking
+    call into the platform resolver, made before any socket exists, so
+    `socket.setdefaulttimeout()` does not bound it. There is no portable way
+    to cancel an in-flight lookup either, so the worker is left to finish on
+    its own and marked **daemon** — it can never keep the process alive, and
+    the caller stops waiting at the deadline regardless.
+
+    This deliberately calls `socket.getaddrinfo` through the module-level name
+    rather than caching it, so `detonate.py`'s import-time DNS-pinning wrapper
+    stays in effect. That wrapper keys its pin on `threading.local()`, and
+    this worker is a fresh thread that never sets one, so the lookup falls
+    through to the real resolver exactly as it does today — no pin is read,
+    set, or cleared here, and `detonate`'s thread-local semantics are
+    untouched.
+    """
+    result: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            result["infos"] = socket.getaddrinfo(host, None)
+        except Exception:
+            # Any resolver failure is just "could not resolve" to the caller;
+            # it must never escape this thread. socket.gaierror and
+            # UnicodeError are both covered here (OSError/ValueError subclasses).
+            result["error"] = True
+
+    worker = threading.Thread(
+        target=_worker, name=f"{_DNS_WORKER_PREFIX}-{host}", daemon=True
+    )
+    worker.start()
+    worker.join(timeout_seconds)
+
+    if worker.is_alive():
+        # Still resolving past the deadline. Abandon it (daemon, so it cannot
+        # block shutdown) and fail closed.
+        return None
+    if "error" in result:
+        return None
+    return result.get("infos") or None
+
+
 def resolve_range_target(host: str) -> str | None:
     """Resolve `host` and return a loopback IP **literal** to connect to, or
     None if it is not provably the local Range.
@@ -161,12 +224,11 @@ def resolve_range_target(host: str) -> str | None:
 
     Resolves the *SMTP host* only, never an MX record for the recipient.
     Resolution failure is NOT-Range: a host we cannot prove is local must not
-    be assumed safe.
+    be assumed safe. That now includes a resolver that simply never answers —
+    the lookup is bounded by `DNS_TIMEOUT_SECONDS` and a timeout fails closed
+    down this same path, rather than hanging the gated tool forever.
     """
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, ValueError, OSError):
-        return None
+    infos = _getaddrinfo_bounded(host, DNS_TIMEOUT_SECONDS)
     if not infos:
         return None
 
