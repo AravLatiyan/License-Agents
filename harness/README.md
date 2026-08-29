@@ -216,6 +216,16 @@ producer for them, not because they were forgotten:
 - `mission.approval_resolved` — nothing echoes our POSTed `user.tool_approval` back as an event.
   It belongs to the submit path, not to a stream translator.
 
+**Gates are held to one outstanding at a time, not just capped at four** (Qodo, PR #73/#74). If a
+single `tool.approval_required` carries several gated calls (or more arrive while one is already
+outstanding), only the first is emitted from `push()` — the rest are assigned an index (arrival
+order is preserved) and queued internally. The submit path — the same code that already POSTs
+`user.tool_approval` the moment a human resolves a gate — must call `translator.resolveGate(gateIndex)`
+right after that POST to release the next queued gate. This is the actual enforcement of §6's
+"four sequential per-tool-call gates, not one modal": the stream carries no resolution event
+(see the point above), so the caller that already knows a gate resolved is the only thing that
+can tell the translator to move on.
+
 **`turn.done` does not mean the mission finished.** A turn ends `done` while *paused* on a licence
 gate, with `required_actions` non-empty and `output: null` — which is exactly our four-gate flow.
 `mission.complete` is emitted only on `done` **and** empty `required_actions` **and** real output.

@@ -44,6 +44,23 @@ export interface TranslatorOptions {
 export interface Translator {
   /** Feed one raw TrueForge stream event; get zero or more MissionEvents back. */
   push(raw: unknown): MissionEvent[];
+  /**
+   * Tell the translator gate `gateIndex` has been resolved, so the next
+   * queued gate (if any) can be released. Returns that gate's
+   * `mission.approval_required` event, or `[]` if none is queued.
+   *
+   * The turn stream has no wire event for "approval resolved" (the 12-type
+   * closed union has nothing between tool.approval_required and the next
+   * turn.done) - a human's decision is a locally-constructed
+   * mission.approval_resolved plus an outbound POST of user.tool_approval,
+   * neither of which push() ever observes. The caller that already knows a
+   * gate resolved (because it just made that POST) is the only thing that
+   * can tell the translator to move on, so it must call this - the
+   * sequential-gate guarantee lives at this call site, not inside push().
+   * A `gateIndex` that doesn't match the currently outstanding gate (stale
+   * or already-resolved) is a no-op, not an error.
+   */
+  resolveGate(gateIndex: 1 | 2 | 3 | 4): MissionEvent[];
 }
 
 // --- small structural guards, no validation library - kept dependency-free,
@@ -212,11 +229,21 @@ export function createTranslator(options: TranslatorOptions): Translator {
   // four licence gates its result belongs to.
   const gateIndexByToolCallId = new Map<string, 1 | 2 | 3 | 4>();
 
-  // Number of mission.approval_required events emitted so far. Gate indices
+  // Number of gates assigned so far (emitted or still queued). Gate indices
   // are assigned in arrival order starting at 1, per contracts/events.ts's
   // ApprovalRequiredEvent doc comment ("a translator assigns them by arrival
-  // order").
+  // order") - assignment happens the moment a call qualifies, before it's
+  // known whether the gate can be emitted immediately or has to queue.
   let gatesAssigned = 0;
+
+  // At most one gate is ever "outstanding" (emitted, not yet resolved) at a
+  // time - this is what actually enforces §6/CLAUDE.md's sequential-gate
+  // requirement when a single tool.approval_required carries several calls,
+  // or when more arrive while one is still pending. Anything assigned while
+  // a gate is already outstanding goes into the queue instead of `out`, and
+  // is only released by resolveGate().
+  let activeGateIndex: 1 | 2 | 3 | 4 | null = null;
+  const pendingGateQueue: ApprovalRequiredEvent[] = [];
 
   function handleModelMessage(raw: Record<string, unknown>): MissionEvent[] {
     const toolCalls = raw.tool_calls;
@@ -240,20 +267,14 @@ export function createTranslator(options: TranslatorOptions): Translator {
     return [];
   }
 
-  // KNOWN LIMITATION (Qodo, PR #73). If one tool.approval_required carries
-  // several tool calls, this emits one mission.approval_required per call, so
-  // the cockpit would show several LICENCE REQUIRED panels at once — against
-  // §6/CLAUDE.md's "four sequential per-tool-call gates, not one modal with
-  // four checkboxes."
-  //
-  // Not fixable here, and deliberately not faked. Serialising would mean
-  // holding gates back until the previous one resolves, and a resolution
-  // arrives as our own POSTed user.tool_approval, which this stream never
-  // carries — the translator has no way to observe it. Whether gates arrive
-  // one at a time is therefore a property of how the agent batches its calls
-  // (agent.json's prompt), not something a stream translator can enforce.
-  // Dropping the extras instead would silently lose a licence gate, which is
-  // strictly worse than showing them early.
+  // SEQUENTIAL GATES (Qodo, PR #73/#74). If one tool.approval_required
+  // carries several tool calls, only the first qualifying one is emitted
+  // here - the rest are assigned an index (so ordering is still arrival
+  // order) but queued, and only released one at a time via resolveGate(),
+  // below. This is the actual enforcement of §6/CLAUDE.md's "four sequential
+  // per-tool-call gates, not one modal with four checkboxes"; see
+  // resolveGate()'s own doc comment for why the release signal has to come
+  // from the caller rather than from anything push() itself observes.
   function handleApprovalRequired(raw: Record<string, unknown>): MissionEvent[] {
     const toolCalls = raw.tool_calls;
     if (!isArr(toolCalls)) return [];
@@ -313,10 +334,25 @@ export function createTranslator(options: TranslatorOptions): Translator {
         // own schema a second time.
         approval: raw as unknown as ToolApprovalRequiredEvent,
       };
-      out.push(event);
+
+      if (activeGateIndex === null) {
+        activeGateIndex = gateIndex;
+        out.push(event);
+      } else {
+        pendingGateQueue.push(event);
+      }
     }
 
     return out;
+  }
+
+  function resolveGate(gateIndex: 1 | 2 | 3 | 4): MissionEvent[] {
+    if (activeGateIndex !== gateIndex) return []; // stale or already-resolved - nothing to release
+    activeGateIndex = null;
+    const next = pendingGateQueue.shift();
+    if (!next) return [];
+    activeGateIndex = next.gate_index;
+    return [next];
   }
 
   function handleToolResponse(raw: Record<string, unknown>): MissionEvent[] {
@@ -501,5 +537,5 @@ export function createTranslator(options: TranslatorOptions): Translator {
     }
   }
 
-  return { push };
+  return { push, resolveGate };
 }
