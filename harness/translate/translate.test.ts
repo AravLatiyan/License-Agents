@@ -164,11 +164,17 @@ test("gate_index increments 1,2,3,4 across four successive approvals, then a fif
     translator.push(modelMessage(`mm-${i}`, "main", [toolCall(callId, name, args)]));
   });
 
+  // Only one gate is ever outstanding at a time (Qodo, PR #73/#74) - each
+  // approval_required still only produces an event once the previous gate
+  // has been resolved via resolveGate().
   const gateIndexes: unknown[] = [];
   actions.forEach(([callId], i) => {
     const result = translator.push(approvalRequired(`appr-${i}`, "main", [ref(callId, `mm-${i}`)]));
     assert.equal(result.length, 1, `approval ${i} should produce exactly one event`);
-    gateIndexes.push((result[0] as { gate_index: unknown }).gate_index);
+    const gateIndex = (result[0] as { gate_index: 1 | 2 | 3 | 4 }).gate_index;
+    gateIndexes.push(gateIndex);
+    const released = translator.resolveGate(gateIndex);
+    assert.deepEqual(released, [], `no gate ${i + 2} exists yet to release`);
   });
 
   assert.deepEqual(gateIndexes, [1, 2, 3, 4]);
@@ -179,6 +185,74 @@ test("gate_index increments 1,2,3,4 across four successive approvals, then a fif
   translator.push(modelMessage("mm-5", "main", [toolCall("call-5", "quarantine", { message_ids: ["m2"] })]));
   const fifth = translator.push(approvalRequired("appr-5", "main", [ref("call-5", "mm-5")]));
   assert.deepEqual(fifth, []);
+});
+
+test("one tool.approval_required carrying several gated calls emits only the first (Qodo, PR #73/#74)", () => {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("mm-1", "main", [toolCall("call-1", "quarantine", { message_ids: ["m1"] })]));
+  translator.push(modelMessage("mm-2", "main", [toolCall("call-2", "notify_impersonated", {})]));
+  translator.push(modelMessage("mm-3", "main", [toolCall("call-3", "create_block_rule", {})]));
+
+  const result = translator.push(
+    approvalRequired("appr-1", "main", [
+      ref("call-1", "mm-1"),
+      ref("call-2", "mm-2"),
+      ref("call-3", "mm-3"),
+    ]),
+  );
+
+  // Gate 1 is emitted immediately; gates 2 and 3 are assigned (arrival
+  // order) but queued, not emitted - the cockpit must never see more than
+  // one LICENCE REQUIRED panel at a time.
+  assert.equal(result.length, 1);
+  assert.equal((result[0] as { gate_index: number }).gate_index, 1);
+
+  const afterFirstResolve = translator.resolveGate(1);
+  assert.equal(afterFirstResolve.length, 1);
+  assert.equal((afterFirstResolve[0] as { gate_index: number }).gate_index, 2);
+
+  const afterSecondResolve = translator.resolveGate(2);
+  assert.equal(afterSecondResolve.length, 1);
+  assert.equal((afterSecondResolve[0] as { gate_index: number }).gate_index, 3);
+
+  const afterThirdResolve = translator.resolveGate(3);
+  assert.deepEqual(afterThirdResolve, []); // nothing left queued
+});
+
+test("a gate arriving while another is still outstanding queues, even across separate tool.approval_required events", () => {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("mm-1", "main", [toolCall("call-1", "quarantine", { message_ids: ["m1"] })]));
+  translator.push(modelMessage("mm-2", "main", [toolCall("call-2", "notify_impersonated", {})]));
+
+  const first = translator.push(approvalRequired("appr-1", "main", [ref("call-1", "mm-1")]));
+  assert.equal(first.length, 1);
+  assert.equal((first[0] as { gate_index: number }).gate_index, 1);
+
+  // Gate 1 is still outstanding (never resolved) - a second, independent
+  // approval_required arriving now must still queue, not emit.
+  const second = translator.push(approvalRequired("appr-2", "main", [ref("call-2", "mm-2")]));
+  assert.deepEqual(second, []);
+
+  const released = translator.resolveGate(1);
+  assert.equal(released.length, 1);
+  assert.equal((released[0] as { gate_index: number }).gate_index, 2);
+});
+
+test("resolveGate with a stale or mismatched gate_index is a no-op", () => {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("mm-1", "main", [toolCall("call-1", "quarantine", { message_ids: ["m1"] })]));
+  translator.push(approvalRequired("appr-1", "main", [ref("call-1", "mm-1")]));
+
+  // No gate 2 exists yet (nothing queued) - resolving it must not throw or
+  // release the still-outstanding gate 1.
+  assert.deepEqual(translator.resolveGate(2), []);
+  // Gate 1 is genuinely resolved next - proves the no-op above didn't
+  // silently clear activeGateIndex.
+  translator.push(modelMessage("mm-2", "main", [toolCall("call-2", "notify_impersonated", {})]));
+  const second = translator.push(approvalRequired("appr-2", "main", [ref("call-2", "mm-2")]));
+  assert.deepEqual(second, []); // still queued - gate 1 was never actually released
+  const released = translator.resolveGate(1);
+  assert.equal((released[0] as { gate_index: number }).gate_index, 2);
 });
 
 test("an approval for a non-gated tool name is skipped", () => {
