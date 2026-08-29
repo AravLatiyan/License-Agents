@@ -399,7 +399,10 @@ body {
   margin: 8px 0 4px;
   font-weight: 700;
   letter-spacing: 0.03em;
-  color: orange;
+  /* plain `orange` text is ~1.97:1 against white - the same WCAG contrast
+     failure already fixed for the suspicious-verdict label (PR #43) with
+     #b45309, ~5:1/~4.2:1 on white/black (Qodo, PR #52 finding #1). */
+  color: #b45309;
 }
 
 .approval-gate__request {
