@@ -1,15 +1,16 @@
-"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021, T-026, T-031).
+"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021, T-022, T-026, T-031).
 
 Streamable HTTP, stateless per request. This is the Python-SDK equivalent of
 the bring-your-own-mcp cookbook example (T-004): same transport, same
 "register in TrueForge Settings, reference by name in agent.json" pattern.
 
 Tools:
-  parse_message        - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
-  domain_intel         - RDAP registration/abuse + crt.sh cert age (Slice 2)
-  url_reputation       - URLhaus exact-URL lookup (Slice 2)
-  detonate             - text-mode redirect-follow + form analysis (Slice 2)
-  notify_impersonated  - gated: email the impersonated party (Slice 3)
+  parse_message         - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
+  domain_intel          - RDAP registration/abuse + crt.sh cert age (Slice 2)
+  url_reputation        - URLhaus exact-URL lookup (Slice 2)
+  correspondence_history - prior contact via Mailpit's HTTP API, not IMAP (Slice 2)
+  detonate              - text-mode redirect-follow + form analysis (Slice 2)
+  notify_impersonated   - gated: email the impersonated party (Slice 3)
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from imports_mcp.correspondence_history import correspondence_history as _correspondence_history
 from imports_mcp.detonate import detonate as _detonate
 from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.file_abuse_report import file_abuse_report as _file_abuse_report
@@ -196,6 +198,28 @@ def url_reputation(url: str) -> dict[str, Any]:
     if not url:
         raise ToolError("url must not be empty")
     return _url_reputation(url)
+
+
+@mcp.tool()
+def correspondence_history(address: str, domain: str) -> dict[str, Any]:
+    """Prior contact for `address`/`domain`, queried from the T-060 Range's
+    Mailpit mailbox over its HTTP API — never IMAP (Mailpit has no IMAP
+    support at all, PLAN.md §6). Mailpit being unreachable or returning
+    something unexpected degrades to a zero-history result rather than
+    raising — the same "never crash the mission over an upstream failure"
+    contract every other read-only tool here already holds.
+    """
+    address = address.strip()
+    domain = domain.strip()
+    if not address:
+        raise ToolError("address must not be empty")
+    if not domain:
+        raise ToolError("domain must not be empty")
+    if len(address) > MAX_ADDRESS_LENGTH or not _ADDRESS_RE.match(address):
+        raise ToolError(f"{address!r} is not a valid email address")
+    if len(domain) > MAX_DOMAIN_LENGTH or not _DOMAIN_RE.match(domain):
+        raise ToolError(f"{domain!r} is not a valid domain name")
+    return _correspondence_history(address, domain)
 
 
 @mcp.tool()
