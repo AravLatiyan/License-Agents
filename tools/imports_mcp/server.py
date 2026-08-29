@@ -1,4 +1,4 @@
-"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021, T-026, T-031).
+"""imports-mcp — Slice 1 + 2 + 3 skeleton (T-012, T-020, T-021, T-026, T-030, T-031).
 
 Streamable HTTP, stateless per request. This is the Python-SDK equivalent of
 the bring-your-own-mcp cookbook example (T-004): same transport, same
@@ -9,6 +9,7 @@ Tools:
   domain_intel         - RDAP registration/abuse + crt.sh cert age (Slice 2)
   url_reputation       - URLhaus exact-URL lookup (Slice 2)
   detonate             - text-mode redirect-follow + form analysis (Slice 2)
+  quarantine           - gated: tag a message "Quarantined" in Mailpit (Slice 3)
   notify_impersonated  - gated: email the impersonated party (Slice 3)
 """
 
@@ -29,6 +30,7 @@ from imports_mcp.file_abuse_report import file_abuse_report as _file_abuse_repor
 from imports_mcp.normaliser import parse_message as _parse_message
 from imports_mcp.notify_impersonated import MAX_ADDRESS_LENGTH, _ADDRESS_RE
 from imports_mcp.notify_impersonated import notify_impersonated as _notify_impersonated
+from imports_mcp.quarantine import quarantine as _quarantine
 from imports_mcp.url_reputation import url_reputation as _url_reputation
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
@@ -212,6 +214,32 @@ def detonate(url: str) -> dict[str, Any]:
     if not url:
         raise ToolError("url must not be empty")
     return _detonate(url)
+
+
+@mcp.tool()
+def quarantine(message_ids: list[str]) -> dict[str, Any]:
+    """Tag one or more messages "Quarantined" in Mailpit's Range instance.
+
+    **Gated (T-034):** TrueForge pauses this call for a human licence
+    decision before it runs — one of the four sequential gates (§10/§17).
+    Approval is the harness's job, never checked here.
+
+    Tags via Mailpit's HTTP API (`PUT /api/v1/tags`) rather than deleting —
+    Mailpit's delete endpoint destroys the message outright and, if `IDs`
+    were ever empty, deletes the *entire* mailbox, so this tool refuses an
+    empty or all-blank list rather than ever reaching that call with
+    nothing meaningful to act on.
+    """
+    if not isinstance(message_ids, list) or not message_ids:
+        raise ToolError("message_ids must be a non-empty list")
+    cleaned = [m.strip() for m in message_ids if isinstance(m, str) and m.strip()]
+    if len(cleaned) != len(message_ids):
+        # Every id must be a real, non-blank string - a caller-supplied
+        # None/number/blank string silently dropped here would make this
+        # tool quarantine fewer messages than the model asked for, with no
+        # signal that anything was skipped.
+        raise ToolError("message_ids must contain only non-empty strings")
+    return _quarantine(cleaned)
 
 
 @mcp.tool()
