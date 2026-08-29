@@ -53,7 +53,90 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 const isStr = (v: unknown): v is string => typeof v === "string";
+const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v === "string";
+const isBool = (v: unknown): v is boolean => typeof v === "boolean";
+const isNum = (v: unknown): v is number => typeof v === "number";
 const isArr = (v: unknown): v is unknown[] => Array.isArray(v);
+const isArrOf = (v: unknown, elem: (x: unknown) => boolean): boolean => isArr(v) && v.every(elem);
+
+// --- tool-result shape guards (Qodo, PR #73: "malformed results become
+// mission events"). handleToolResponse only proved `content` parses as
+// JSON before this fix, then cast the parsed value straight to its typed
+// payload - any tool bug or hostile MCP response that still parsed as JSON
+// (e.g. `{}`, or a differently-shaped object) would silently become a
+// fully-typed mission.evidence/mission.detonation/mission.message_received
+// event, which downstream Cockpit code trusts as already-validated
+// (missionSource.ts's own checkers exist for exactly this reason, on the
+// mission.* side of the wire; these mirror the same field shapes from
+// contracts/events.ts on the tool-result side). Never throws, matching this
+// file's own contract - an invalid shape is dropped exactly like an
+// unparseable result already is, not reported as a mission.failed, since one
+// bad tool result should not fail the whole mission (§13: missing/malformed
+// evidence is "not determined", not an error). ---
+
+const isUrlEntry = (v: unknown): boolean => isRecord(v) && isStr(v.href) && isStr(v.anchor_text);
+const isAttachmentEntry = (v: unknown): boolean => isRecord(v) && isStr(v.filename) && isStr(v.sha256);
+const isRedirectHop = (v: unknown): boolean => isRecord(v) && isStr(v.url) && isNum(v.status);
+
+function isParsedMessage(v: unknown): v is ParsedMessage {
+  return (
+    isRecord(v) &&
+    isStr(v.message_id) &&
+    isStr(v.from) &&
+    isStrOrNull(v.reply_to) &&
+    isStrOrNull(v.return_path) &&
+    isStrOrNull(v.display_name) &&
+    isStr(v.authentication_results) &&
+    isArrOf(v.received_chain, isStr) &&
+    isArrOf(v.urls, isUrlEntry) &&
+    isArrOf(v.attachments, isAttachmentEntry)
+  );
+}
+
+const isDomainIntel = (v: unknown): v is DomainIntel =>
+  isRecord(v) &&
+  isStr(v.domain) &&
+  isStrOrNull(v.registration_date) &&
+  isStrOrNull(v.registrar) &&
+  isStrOrNull(v.abuse_contact) &&
+  isStrOrNull(v.cert_issued_at);
+
+const isUrlReputation = (v: unknown): v is UrlReputation =>
+  isRecord(v) && isStr(v.url) && isBool(v.listed) && isArrOf(v.tags, isStr);
+
+const isCorrespondenceHistory = (v: unknown): v is CorrespondenceHistory =>
+  isRecord(v) &&
+  isStr(v.address) &&
+  isStr(v.domain) &&
+  isNum(v.prior_contact_count) &&
+  isStrOrNull(v.first_seen) &&
+  isStrOrNull(v.last_seen) &&
+  isArrOf(v.domains_used, isStr);
+
+/** Mirrors DetonationForm's two-branch union: action_invalid true pairs with
+ *  null action_origin/cross_domain, false-or-absent pairs with real values. */
+function isDetonationForm(v: unknown): boolean {
+  if (!isRecord(v) || !isStr(v.action) || !isStr(v.method) || !isBool(v.asks_password)) return false;
+  if (v.action_invalid === true) return v.action_origin === null && v.cross_domain === null;
+  if (v.action_invalid !== undefined && v.action_invalid !== false) return false;
+  return isStr(v.action_origin) && isBool(v.cross_domain);
+}
+
+/** Mirrors DetonationResult's two-branch union exactly - error branch has no
+ *  final_url/forms/summary, success branch has no error. */
+function isDetonationResult(v: unknown): v is DetonationResult {
+  if (!isRecord(v) || !isStr(v.url) || !isArrOf(v.redirect_chain, isRedirectHop)) return false;
+  const hasError = "error" in v;
+  const hasSuccess = "summary" in v;
+  if (hasError === hasSuccess) return false; // must have exactly one
+  if (hasError) return isStr(v.error);
+  return (
+    isStr(v.final_url) &&
+    isArrOf(v.forms, isDetonationForm) &&
+    isStr(v.summary) &&
+    (v.screenshot_id === undefined || isStr(v.screenshot_id))
+  );
+}
 
 /** The four tool names that carry a licence gate (contracts/events.ts
  *  ProposedActionName). A plain function rather than a typed Set: Set<T>.has
@@ -254,26 +337,29 @@ export function createTranslator(options: TranslatorOptions): Translator {
     const name = pending.name;
     switch (name) {
       case "parse_message":
-        return [{ type: "mission.message_received", mission_id: missionId, message: parsed as ParsedMessage }];
+        if (!isParsedMessage(parsed)) return []; // malformed result - not a well-formed mission event either
+        return [{ type: "mission.message_received", mission_id: missionId, message: parsed }];
 
       case "domain_intel":
       case "url_reputation":
+        if (!isDomainIntel(parsed) && !isUrlReputation(parsed)) return [];
         return [
           {
             type: "mission.evidence",
             mission_id: missionId,
             lane: "infrastructure",
-            evidence: parsed as DomainIntel | UrlReputation,
+            evidence: parsed,
           },
         ];
 
       case "correspondence_history":
+        if (!isCorrespondenceHistory(parsed)) return [];
         return [
           {
             type: "mission.evidence",
             mission_id: missionId,
             lane: "history",
-            evidence: parsed as CorrespondenceHistory,
+            evidence: parsed,
           },
         ];
 
@@ -287,7 +373,8 @@ export function createTranslator(options: TranslatorOptions): Translator {
       // determined" is silence: no event for this lane at all.
 
       case "detonate":
-        return [{ type: "mission.detonation", mission_id: missionId, detonation: parsed as DetonationResult }];
+        if (!isDetonationResult(parsed)) return []; // malformed result - not a well-formed mission event either
+        return [{ type: "mission.detonation", mission_id: missionId, detonation: parsed }];
 
       case "quarantine":
       case "notify_impersonated":
