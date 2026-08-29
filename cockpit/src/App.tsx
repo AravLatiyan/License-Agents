@@ -4,6 +4,7 @@ import { ApprovalPanel } from "./ApprovalPanel";
 import { DetonationPanel } from "./DetonationPanel";
 import { EvidenceLanes } from "./EvidenceLanes";
 import { MissionView } from "./MissionView";
+import { SpokenVerdict } from "./SpokenVerdict";
 import { VerdictPanel } from "./VerdictPanel";
 import { fixtureEventSource } from "./missionSource";
 import { useMissionEvents } from "./useMissionEvents";
@@ -31,6 +32,7 @@ function App() {
       <VerdictPanel events={events} />
       <ApprovalPanel events={events} />
       <MissionView events={events} />
+      <SpokenVerdict events={events} />
     </main>
   );
 }
