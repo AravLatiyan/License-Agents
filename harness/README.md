@@ -188,3 +188,34 @@ Four named failure modes, each verified individually rather than assumed to need
   and say so plainly in the verdict if evidence is incomplete rather than treating the gap as
   checked-and-clean. **Written, not yet runtime-verified** — same caveat as T-023/T-024 above, no
   local TrueForge instance this session to observe the actual effect on a real turn.
+
+## translate/ — TrueForge turn stream → `mission.*` (T-037)
+
+`translate/translate.ts` is the translation boundary §8 had open: a pure, stateful function
+from TrueForge's generic turn-stream events into `contracts/events.ts`'s `MissionEvent`s.
+The agent never emits `mission.*` itself — TrueForge's stream is a closed 12-member union with
+no extension point, so translation on our side is the only supported route.
+
+```bash
+node --experimental-strip-types --test harness/translate/translate.test.ts
+```
+
+The flag is required: the module is TypeScript, and Node 22 strips types only when asked.
+Note `node --test <directory>` does **not** work on this setup (it reports
+`Cannot find module <dir>` for any directory, including a trivial one) — pass explicit file
+paths, same as the JS suites.
+
+**Three `mission.*` events are deliberately never emitted**, each because the stream carries no
+producer for them, not because they were forgotten:
+
+- `mission.evidence` with `lane: "identity"` — nothing computes `lookalike_domain`/`lookalike_of`.
+  Emitting `false` would print "No lookalike domain detected", asserting a clean security finding
+  nothing checked. Absence is the decided representation (PLAN.md §6, 2026-08-30).
+- `mission.verdict` — needs a `malicious|suspicious|legitimate` label; the stream carries only the
+  model's plain prose. Deriving a label by parsing prose would be inventing semantics.
+- `mission.approval_resolved` — nothing echoes our POSTed `user.tool_approval` back as an event.
+  It belongs to the submit path, not to a stream translator.
+
+**`turn.done` does not mean the mission finished.** A turn ends `done` while *paused* on a licence
+gate, with `required_actions` non-empty and `output: null` — which is exactly our four-gate flow.
+`mission.complete` is emitted only on `done` **and** empty `required_actions` **and** real output.
