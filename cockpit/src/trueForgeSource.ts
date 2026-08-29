@@ -158,12 +158,17 @@ export interface ApprovalDecision {
 export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueForgeMission {
   const doFetch = options.fetchImpl ?? fetch;
 
-  // Set once the stream opens. `submitApproval` needs both, and neither
-  // exists until the generator has actually run — a decision cannot precede
-  // the gate that prompted it, so refusing until then is correct rather than
-  // a limitation.
-  let sessionId: string | null = null;
-  let translator: ReturnType<typeof createTranslator> | null = null;
+  // Per-RUN state, not per-mission. The source generator is reusable and
+  // React StrictMode invokes effects twice, so two runs can overlap; sharing
+  // one sessionId/translator let a gate from one run resume against another
+  // run's session (Qodo, PR #85). Each invocation installs its own run, and
+  // `submitApproval` always targets the newest — which is the one whose
+  // events the UI is actually showing.
+  interface Run {
+    sessionId: string;
+    translator: ReturnType<typeof createTranslator>;
+  }
+  let currentRun: Run | null = null;
 
   const source: MissionEventSource = async function* () {
     // An AbortController tied to this generator's lifetime. `useMissionEvents`
@@ -185,11 +190,12 @@ export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueFor
     if (!sessionResponse.ok) {
       throw new Error(`could not create session: HTTP ${sessionResponse.status}`);
     }
-    sessionId = idOf(await sessionResponse.json());
+    const sessionId = idOf(await sessionResponse.json());
     if (!sessionId) throw new Error("session response carried no id");
 
-    translator = createTranslator({ missionId: options.missionId ?? sessionId });
-    const activeTranslator = translator;
+    const activeTranslator = createTranslator({ missionId: options.missionId ?? sessionId });
+    const run: Run = { sessionId, translator: activeTranslator };
+    currentRun = run;
 
     const turnResponse = await doFetch(`${options.baseUrl}/sessions/${sessionId}/turns`, {
       method: "POST",
@@ -263,10 +269,44 @@ export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueFor
     }
   };
 
+  /** Read an SSE body to completion, translating every frame. Shared by the
+   *  first turn and by each resumed turn, so a resume is translated exactly
+   *  like the stream it continues. */
+  async function drainStream(body: ReadableStream<Uint8Array>, translator: Run["translator"]): Promise<MissionEvent[]> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let index = 0;
+    const out: MissionEvent[] = [];
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const { frames, rest } = parseSseFrames(buffer);
+        buffer = rest;
+        for (const frame of frames) {
+          if (frame.data === "[DONE]") return out;
+          let raw: unknown;
+          try {
+            raw = JSON.parse(frame.data);
+          } catch {
+            continue;
+          }
+          for (const event of translator.push(raw)) out.push(assertMissionEvent(event, index++));
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return out;
+  }
+
   async function submitApproval(decision: ApprovalDecision): Promise<MissionEvent[]> {
-    const currentSession = sessionId;
-    const currentTranslator = translator;
-    if (!currentSession || !currentTranslator) return [];
+    const run = currentRun;
+    if (!run) return [];
+    const currentSession = run.sessionId;
+    const currentTranslator = run.translator;
 
     const resume: ToolApprovalResume = {
       type: "user.tool_approval",
@@ -277,10 +317,15 @@ export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueFor
         : { status: decision.status },
     };
 
+    // stream: true, because the resumed turn is where the ALLOWED ACTION
+    // ACTUALLY RUNS. A non-streaming resume threw away the executed-action
+    // result, any later gate the resumed model loop produces, failures, and
+    // mission completion — so after clicking Allow the cockpit would sit
+    // frozen on a mission that had in fact continued (Qodo, PR #85).
     const response = await doFetch(`${options.baseUrl}/sessions/${currentSession}/turns`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stream: false, input: [resume] }),
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ stream: true, input: [resume] }),
     });
     if (!response.ok) {
       throw new Error(`could not submit approval: HTTP ${response.status}`);
@@ -302,7 +347,9 @@ export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueFor
     // until now nothing in the app ever called it — so a mission with more
     // than one gate outstanding would show the first and silently withhold
     // the rest. This is that missing caller.
-    return [resolved, ...currentTranslator.resolveGate(decision.gateIndex)];
+    const released = currentTranslator.resolveGate(decision.gateIndex);
+    const resumed = response.body ? await drainStream(response.body, currentTranslator) : [];
+    return [resolved, ...released, ...resumed];
   }
 
   return { source, submitApproval };

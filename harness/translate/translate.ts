@@ -335,6 +335,10 @@ export function createTranslator(options: TranslatorOptions): Translator {
         gate_index: gateIndex,
         gate_count: 4,
         action: { action: name, arguments: args },
+        // This gate's OWN call, not approval.tool_calls[0] - one wire event
+        // can carry several calls, and taking the first would let gate 2
+        // resume gate 1's action (Qodo, PR #85).
+        tool_call_id: toolCallId,
         // Kept verbatim for provenance (contracts/events.ts's `approval`
         // field doc). This is the same raw event we already read tool_calls
         // out of above, cast back to its wire type rather than re-validated -

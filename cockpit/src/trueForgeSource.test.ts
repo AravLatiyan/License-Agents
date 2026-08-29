@@ -677,3 +677,164 @@ test("a failed resume POST surfaces as an error rather than a silent no-op", asy
     "a licence decision that did not reach TrueForge must not look like it did",
   );
 });
+
+// ---------------------------------------------------------------------------
+// E. The four defects Qodo found on PR #85
+// ---------------------------------------------------------------------------
+
+/** Two gated calls in ONE approval event — the shape that exposed the
+ *  wrong-call bug, because approval.tool_calls[0] is call-1 for both gates. */
+function twoGateSse() {
+  return sseText([
+    {
+      data: {
+        type: "model.message",
+        id: "mm-1",
+        thread_id: "main",
+        tool_calls: [
+          { id: "call-1", type: "function", function: { name: "quarantine", arguments: "{}" } },
+          { id: "call-2", type: "function", function: { name: "file_abuse_report", arguments: "{}" } },
+        ],
+      },
+    },
+    {
+      data: {
+        type: "tool.approval_required",
+        id: "appr-1",
+        created_at: "2026-08-30T00:00:00Z",
+        thread_id: "main",
+        tool_calls: [{ id: "call-1", source_event_id: "mm-1" }, { id: "call-2", source_event_id: "mm-1" }],
+      },
+    },
+  ]);
+}
+
+// THE severe one. One wire event can carry several tool calls, so deriving the
+// call from approval.tool_calls[0] gave gate 2 gate 1's id — the cockpit would
+// display one action while allowing or denying a different one, which is the
+// exact failure the licence mechanism exists to prevent.
+test("each gate carries its OWN tool_call_id, not the first call in the request", async () => {
+  let call = 0;
+  const sse = twoGateSse();
+  const fetchImpl = (async () => {
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, json: async () => ({ id: "sess-1" }) } as unknown as Response;
+    if (call === 2) return { ok: true, status: 200, body: streamOf([sse]) } as unknown as Response;
+    return { ok: true, status: 200 } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+
+  const streamed = [];
+  for await (const e of mission.source()) streamed.push(e);
+  const gate1 = streamed.find((e) => e.type === "mission.approval_required");
+  assert.equal((gate1 as { tool_call_id: string }).tool_call_id, "call-1");
+
+  const produced = await mission.submitApproval({
+    gateIndex: 1,
+    threadId: "main",
+    toolCallId: "call-1",
+    status: "allow",
+  });
+  const gate2 = produced.find((e) => e.type === "mission.approval_required");
+  assert.ok(gate2, "gate 2 should be released");
+  assert.equal(
+    (gate2 as { tool_call_id: string }).tool_call_id,
+    "call-2",
+    "gate 2 must carry call-2 — taking approval.tool_calls[0] would resume gate 1's action",
+  );
+});
+
+// The resumed turn is where the allowed action actually runs. Discarding its
+// stream left the cockpit frozen on a mission that had in fact continued.
+test("the resumed turn's events reach the caller instead of being discarded", async () => {
+  const firstSse = sseText([
+    {
+      data: {
+        type: "model.message",
+        id: "mm-1",
+        thread_id: "main",
+        tool_calls: [{ id: "call-1", type: "function", function: { name: "quarantine", arguments: "{}" } }],
+      },
+    },
+    {
+      data: {
+        type: "tool.approval_required",
+        id: "appr-1",
+        created_at: "2026-08-30T00:00:00Z",
+        thread_id: "main",
+        tool_calls: [{ id: "call-1", source_event_id: "mm-1" }],
+      },
+    },
+  ]);
+  // What the resume produces: the gated action actually executing, then the
+  // mission completing.
+  const resumeSse = sseText([
+    { data: { type: "tool.response", id: "tr-1", thread_id: "main", tool_call_id: "call-1", content: JSON.stringify({ quarantined: true, note: "1 message quarantined" }) } },
+    { data: { type: "turn.done", state: { status: "done", required_actions: [], output: { type: "model.message", content: "Done." }, completed_at: "t" } } },
+  ]);
+
+  let call = 0;
+  const fetchImpl = (async () => {
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, json: async () => ({ id: "sess-1" }) } as unknown as Response;
+    if (call === 2) return { ok: true, status: 200, body: streamOf([firstSse]) } as unknown as Response;
+    return { ok: true, status: 200, body: streamOf([resumeSse]) } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+  for await (const _e of mission.source()) { /* drain the first turn */ }
+
+  const produced = await mission.submitApproval({
+    gateIndex: 1,
+    threadId: "main",
+    toolCallId: "call-1",
+    status: "allow",
+  });
+
+  const types = produced.map((e) => e.type);
+  assert.ok(types.includes("mission.approval_resolved"), "the decision itself");
+  assert.ok(types.includes("mission.action_executed"), "the allowed action actually running");
+  assert.ok(types.includes("mission.complete"), "and the mission finishing");
+});
+
+// The source generator is reusable and StrictMode invokes effects twice, so
+// two runs can overlap. Sharing one session let a gate from one run resume
+// against another run's session.
+test("a second run installs its own session; a decision targets the newest", async () => {
+  const sse = sseText([{ data: { type: "turn.created", id: "e0", turn_id: "t1", previous_turn_id: null, state: { status: "running" }, thread_id: null } }]);
+  const urls: string[] = [];
+  let session = 0;
+  const fetchImpl = (async (url: string) => {
+    urls.push(url);
+    if (url.endsWith("/sessions")) {
+      session += 1;
+      return { ok: true, status: 200, json: async () => ({ id: `sess-${session}` }) } as unknown as Response;
+    }
+    return { ok: true, status: 200, body: streamOf([sse]) } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+
+  for await (const _e of mission.source()) { /* run 1 */ }
+  for await (const _e of mission.source()) { /* run 2 */ }
+
+  await mission.submitApproval({ gateIndex: 1, threadId: "main", toolCallId: "call-1", status: "allow" });
+  const resumeUrl = urls[urls.length - 1];
+  assert.match(resumeUrl, /\/sessions\/sess-2\/turns$/, "the decision must resume the run the UI is showing");
+});

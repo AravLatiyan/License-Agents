@@ -53,12 +53,36 @@ function App() {
   const [decisionEvents, setDecisionEvents] = useState<MissionEvent[]>([]);
   const [decisionError, setDecisionError] = useState<string | null>(null);
 
+  // Gates with a decision already in flight. Without this, the buttons stay
+  // live during the async POST, so a double-click (or an Allow then a Deny)
+  // sends two resumes for the same gate and appends two resolution events,
+  // leaving the displayed outcome dependent on response order (Qodo, PR #85).
+  // A licence decision is exactly the wrong thing to let race.
+  const [pendingGates, setPendingGates] = useState<ReadonlySet<number>>(new Set());
+
   const onDecision = useCallback<ApprovalDecisionHandler>((decision) => {
     if (!liveMission) return;
+    let alreadyPending = false;
+    setPendingGates((prev) => {
+      if (prev.has(decision.gateIndex)) {
+        alreadyPending = true;
+        return prev;
+      }
+      return new Set(prev).add(decision.gateIndex);
+    });
+    if (alreadyPending) return;
+
     void liveMission
       .submitApproval(decision)
       .then((produced) => setDecisionEvents((prev) => [...prev, ...produced]))
-      .catch((err: unknown) => setDecisionError(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => setDecisionError(err instanceof Error ? err.message : String(err)))
+      .finally(() =>
+        setPendingGates((prev) => {
+          const next = new Set(prev);
+          next.delete(decision.gateIndex);
+          return next;
+        }),
+      );
   }, []);
 
   const allEvents = decisionEvents.length === 0 ? events : [...events, ...decisionEvents];
@@ -76,7 +100,7 @@ function App() {
       <EvidenceLanes events={allEvents} />
       <DetonationPanel events={allEvents} />
       <VerdictPanel events={allEvents} />
-      <ApprovalPanel events={allEvents} onDecision={liveMission ? onDecision : undefined} />
+      <ApprovalPanel events={allEvents} onDecision={liveMission ? onDecision : undefined} pendingGates={pendingGates} />
       <MissionView events={allEvents} />
       <SpokenVerdict events={allEvents} />
     </main>

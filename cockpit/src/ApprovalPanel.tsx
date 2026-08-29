@@ -40,9 +40,12 @@ export type ApprovalDecisionHandler = (decision: {
 export function ApprovalPanel({
   events,
   onDecision,
+  pendingGates,
 }: {
   events: MissionEvent[];
   onDecision?: ApprovalDecisionHandler;
+  /** Gates whose decision is mid-flight; their buttons lock until it lands. */
+  pendingGates?: ReadonlySet<number>;
 }) {
   const gates = buildApprovalGates(events);
   return (
@@ -50,7 +53,12 @@ export function ApprovalPanel({
       <h2>Licence gates</h2>
       <ol className="approval-gates">
         {gates.map((gate) => (
-          <ApprovalGateCard key={gate.gateIndex} gate={gate} onDecision={onDecision} />
+          <ApprovalGateCard
+            key={gate.gateIndex}
+            gate={gate}
+            onDecision={onDecision}
+            pending={pendingGates?.has(gate.gateIndex) ?? false}
+          />
         ))}
       </ol>
     </section>
@@ -60,17 +68,19 @@ export function ApprovalPanel({
 function ApprovalGateCard({
   gate,
   onDecision,
+  pending = false,
 }: {
   gate: ReturnType<typeof buildApprovalGates>[number];
   onDecision?: ApprovalDecisionHandler;
+  pending?: boolean;
 }) {
   // The gate can only be decided if we know which tool call it belongs to.
   // That comes from the raw approval event TrueForge sent, so a gate rebuilt
   // from a reconnect that never saw the request (missionPlan tolerates that,
   // T-056) correctly stays undecidable rather than submitting a guess.
-  const toolCallId = gate.request?.tool_calls[0]?.id ?? null;
+  const toolCallId = gate.toolCallId ?? null;
   const threadId = gate.request?.thread_id ?? null;
-  const canDecide = Boolean(onDecision && toolCallId && threadId);
+  const canDecide = Boolean(onDecision && toolCallId && threadId) && !pending;
   const label = gate.action ? ACTION_LABEL[gate.action] : null;
 
   let status: "pending" | "requested" | "allowed" | "denied" | "executed";
@@ -120,7 +130,7 @@ function ApprovalGateCard({
           <button
             type="button"
             disabled={!canDecide}
-            title={canDecide ? "Grant the licence for this action" : "No live TrueForge turn to resume"}
+            title={pending ? "Submitting…" : canDecide ? "Grant the licence for this action" : "No live TrueForge turn to resume"}
             onClick={() =>
               canDecide &&
               onDecision?.({ gateIndex: gate.gateIndex, threadId: threadId!, toolCallId: toolCallId!, status: "allow" })
@@ -131,7 +141,7 @@ function ApprovalGateCard({
           <button
             type="button"
             disabled={!canDecide}
-            title={canDecide ? "Refuse the licence for this action" : "No live TrueForge turn to resume"}
+            title={pending ? "Submitting…" : canDecide ? "Refuse the licence for this action" : "No live TrueForge turn to resume"}
             onClick={() =>
               canDecide &&
               onDecision?.({ gateIndex: gate.gateIndex, threadId: threadId!, toolCallId: toolCallId!, status: "deny" })
@@ -139,7 +149,8 @@ function ApprovalGateCard({
           >
             Deny
           </button>
-          {!canDecide && (
+          {pending && <p className="approval-gate__note">Submitting decision…</p>}
+          {!canDecide && !pending && (
             <p className="approval-gate__note">
               Presentation only — no live TrueForge turn to resume (fixture playback).
             </p>

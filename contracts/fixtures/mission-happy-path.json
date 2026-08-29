@@ -58,28 +58,28 @@
   {
     "type": "mission.approval_required", "mission_id": "mission-001", "gate_index": 1, "gate_count": 4,
     "action": { "action": "quarantine", "arguments": { "message_ids": ["msg-001"] } },
-    "approval": { "type": "tool.approval_required", "id": "appr-001", "created_at": "2026-08-26T00:05:00Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-001", "source_event_id": "evt-model-message-001" }] }
+    "tool_call_id": "call-001", "approval": { "type": "tool.approval_required", "id": "appr-001", "created_at": "2026-08-26T00:05:00Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-001", "source_event_id": "evt-model-message-001" }] }
   },
   { "type": "mission.approval_resolved", "mission_id": "mission-001", "gate_index": 1, "status": "allow" },
   { "type": "mission.action_executed", "mission_id": "mission-001", "gate_index": 1, "action": "quarantine", "result_summary": "msg-001 moved to Quarantine." },
   {
     "type": "mission.approval_required", "mission_id": "mission-001", "gate_index": 2, "gate_count": 4,
     "action": { "action": "notify_impersonated", "arguments": { "address": "a.morgan@northgate-trust.com", "evidence": "mission-001" } },
-    "approval": { "type": "tool.approval_required", "id": "appr-002", "created_at": "2026-08-26T00:05:30Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-002", "source_event_id": "evt-model-message-002" }] }
+    "tool_call_id": "call-002", "approval": { "type": "tool.approval_required", "id": "appr-002", "created_at": "2026-08-26T00:05:30Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-002", "source_event_id": "evt-model-message-002" }] }
   },
   { "type": "mission.approval_resolved", "mission_id": "mission-001", "gate_index": 2, "status": "allow" },
   { "type": "mission.action_executed", "mission_id": "mission-001", "gate_index": 2, "action": "notify_impersonated", "result_summary": "Real Alex Morgan (a.morgan@northgate-trust.com) notified they're being impersonated." },
   {
     "type": "mission.approval_required", "mission_id": "mission-001", "gate_index": 3, "gate_count": 4,
     "action": { "action": "create_block_rule", "arguments": { "pattern": "*@northgate-trust-finance.com" } },
-    "approval": { "type": "tool.approval_required", "id": "appr-003", "created_at": "2026-08-26T00:06:00Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-003", "source_event_id": "evt-model-message-003" }] }
+    "tool_call_id": "call-003", "approval": { "type": "tool.approval_required", "id": "appr-003", "created_at": "2026-08-26T00:06:00Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-003", "source_event_id": "evt-model-message-003" }] }
   },
   { "type": "mission.approval_resolved", "mission_id": "mission-001", "gate_index": 3, "status": "allow" },
   { "type": "mission.action_executed", "mission_id": "mission-001", "gate_index": 3, "action": "create_block_rule", "result_summary": "Block rule created for *@northgate-trust-finance.com." },
   {
     "type": "mission.approval_required", "mission_id": "mission-001", "gate_index": 4, "gate_count": 4,
     "action": { "action": "file_abuse_report", "arguments": { "domain": "northgate-trust-finance.com", "evidence": "mission-001" } },
-    "approval": { "type": "tool.approval_required", "id": "appr-004", "created_at": "2026-08-26T00:06:30Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-004", "source_event_id": "evt-model-message-004" }] }
+    "tool_call_id": "call-004", "approval": { "type": "tool.approval_required", "id": "appr-004", "created_at": "2026-08-26T00:06:30Z", "thread_id": "thread-mission-001", "tool_calls": [{ "id": "call-004", "source_event_id": "evt-model-message-004" }] }
   },
   { "type": "mission.approval_resolved", "mission_id": "mission-001", "gate_index": 4, "status": "allow" },
   { "type": "mission.action_executed", "mission_id": "mission-001", "gate_index": 4, "action": "file_abuse_report", "result_summary": "Abuse report filed against northgate-trust-finance.com's registrar abuse contact." },
