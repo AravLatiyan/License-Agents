@@ -469,3 +469,44 @@ body {
 .approval-gate--executed {
   border-color: seagreen;
 }
+
+/* Spoken verdict (T-043) — the demo's closing beat (§17, 2:40-3:00). */
+.spoken-verdict {
+  margin: 16px 0;
+}
+
+.spoken-verdict h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+.spoken-verdict__empty {
+  opacity: 0.45;
+}
+
+.spoken-verdict__text {
+  font-size: 1.1rem;
+  font-style: italic;
+  margin: 0 0 10px;
+}
+
+.spoken-verdict button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.spoken-verdict button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.spoken-verdict__unsupported {
+  opacity: 0.6;
+  font-size: 0.9rem;
+}
