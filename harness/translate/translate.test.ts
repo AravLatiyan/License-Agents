@@ -1,8 +1,9 @@
 // harness/translate/translate.test.ts
 //
-// Tests for the raw-TrueForge-stream -> MissionEvent translator, written
-// against the spec in this task's brief (T-0xx, translate.ts owner is a
-// different in-flight PR) rather than against the implementation. Do not
+// Tests for the raw-TrueForge-stream -> MissionEvent translator (T-037),
+// written against the spec rather than against the implementation — the
+// suite was authored concurrently with translate.ts, without reading it,
+// so it checks the contract rather than mirroring the code. Do not
 // weaken an assertion here to match what translate.ts happens to do —
 // if the implementation disagrees with a test below, the implementation
 // is what's wrong, per the same "shape source of truth" discipline
@@ -797,4 +798,32 @@ test("a matching source_event_id still resolves the gate normally", () => {
   if (event.type !== "mission.approval_required") return;
   assert.equal(event.action.action, "quarantine");
   assert.deepEqual(event.action.arguments, { message_ids: ["m1"] });
+});
+
+// The malformed-payload test above covers a partial object — an object of the
+// right kind missing required fields. This covers the other shape of bad tool
+// output: JSON that parses to the wrong *type* entirely. Distinct path,
+// because a guard written as "check these fields" can pass an array (whose
+// named properties are all undefined) if it never first proves the value is a
+// plain object. Every one must be dropped, never cast into a typed payload.
+test("a tool result whose JSON is the wrong type entirely is dropped", () => {
+  const wrongTypes = ["[]", '"a string"', "42", "null", "true", "[{}]"];
+
+  for (const body of wrongTypes) {
+    const translator = createTranslator({ missionId: MISSION_ID });
+    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "detonate", {})]));
+    const result = translator.push(toolResponse("evt-2", "main", "call-1", body));
+    assert.deepEqual(result, [], `JSON ${body} must not become a mission.detonation`);
+  }
+});
+
+test("the same wrong-type results are dropped for every producing tool", () => {
+  const producers = ["parse_message", "domain_intel", "url_reputation", "correspondence_history"];
+
+  for (const tool of producers) {
+    const translator = createTranslator({ missionId: MISSION_ID });
+    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", tool, {})]));
+    const result = translator.push(toolResponse("evt-2", "main", "call-1", "[]"));
+    assert.deepEqual(result, [], `an array result from ${tool} must not become a mission event`);
+  }
 });
