@@ -60,6 +60,13 @@ function stageOf(event: MissionEvent): StageId {
     case "mission.action_executed":
       return "gates";
     case "mission.complete":
+    // A failed turn is terminal, same as a completed one - the mission is
+    // over either way, so it maps to the same final stage. `missionDone` and
+    // the "complete" node's own detail text (buildMissionPlan, below) both
+    // derive from mission.complete OR mission.failed for the same reason
+    // (Qodo, PR #71) - a failed mission now settles to "done" throughout the
+    // tree instead of rendering as active forever.
+    case "mission.failed":
       return "complete";
   }
 }
@@ -95,6 +102,13 @@ export function describeEvent(event: MissionEvent): string {
       return event.result_summary;
     case "mission.complete":
       return event.spoken_verdict;
+    // T-037 handoff: each branch reads the field its own TrueForge producer
+    // publishes - TurnStateError has a message, TurnStateCancelled has only
+    // a reason enum.
+    case "mission.failed":
+      return event.cause === "error"
+        ? `Mission failed: ${event.message}`
+        : `Mission cancelled: ${event.reason}`;
   }
 }
 
@@ -179,10 +193,19 @@ export interface ApprovalGateState {
   gateIndex: 1 | 2 | 3 | 4;
   action?: ProposedActionName;
   /** The literal TrueForge approval request, once `approval_required`
-   *  arrives - T-036's LICENCE REQUIRED panel shows this JSON verbatim,
-   *  the same "shows the literal request" behavior TrueForge's own native
-   *  approval UI has (CLAUDE.md), just in our styling. */
+   *  arrives - kept for provenance (event id, timestamp, thread, and the
+   *  tool-call ids awaiting a decision).
+   *
+   *  T-037: this is NO LONGER what the panel displays. The real wire event's
+   *  `tool_calls` are `ToolCallRef` - `{id, source_event_id}` only - so
+   *  rendering them verbatim would show a judge two opaque ids instead of
+   *  the request. The displayable request is `requestArguments` below,
+   *  paired with `action`. */
   request?: ToolApprovalRequiredEvent;
+  /** The decoded arguments of the gated call, from
+   *  `ApprovalRequiredEvent.action.arguments` - the half of "shows the
+   *  literal request" (CLAUDE.md) that survives T-037's correction. */
+  requestArguments?: Record<string, unknown>;
   resolved?: ApprovalStatus;
   reason?: string;
   resultSummary?: string;
@@ -212,6 +235,7 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
     if (e.type === "mission.approval_required") {
       const g = gateState(e.gate_index);
       g.action = e.action.action;
+      g.requestArguments = e.action.arguments;
       g.request = e.approval;
       // A fresh request for a gate index that already carries a prior
       // outcome (a retried tool call, same pattern as T-053's retried
@@ -239,7 +263,12 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
 }
 
 export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
-  const missionDone = events.some((e) => e.type === "mission.complete");
+  // T-037 handoff (Qodo, PR #71): a mission.failed event is terminal, same as
+  // mission.complete (stageOf above already maps both to "complete") - but
+  // this line only checked mission.complete, so a failed mission never
+  // settled to "done" anywhere in the tree and stayed rendered as active
+  // forever.
+  const missionDone = events.some((e) => e.type === "mission.complete" || e.type === "mission.failed");
   const currentIndex = currentStageIndex(events);
   const indexOf = (stage: StageId) => STAGE_ORDER.indexOf(stage);
 
@@ -339,8 +368,12 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   };
 
   // --- complete ------------------------------------------------------------
+  // Same handoff as missionDone above: the "complete" node's own detail text
+  // must come from whichever terminal event actually happened, not just the
+  // success one - describeEvent already renders both.
   const completeEvent = events.find(
-    (e): e is Extract<MissionEvent, { type: "mission.complete" }> => e.type === "mission.complete",
+    (e): e is Extract<MissionEvent, { type: "mission.complete" | "mission.failed" }> =>
+      e.type === "mission.complete" || e.type === "mission.failed",
   );
   const completeNode: PlanNode = {
     id: "complete",
