@@ -82,3 +82,59 @@ void approvalRequired;
 void staleApprovalShape;
 void requestingCall;
 void parsedArgumentsRejected;
+
+// --- T-037: a failed turn is not a verdict, and each cause keeps its own field ---
+
+import type { MissionFailedEvent, MissionEvent } from "./events";
+
+// Valid: the error branch carries TurnStateError.message.
+const failedByError: MissionFailedEvent = {
+  type: "mission.failed",
+  mission_id: "mission-001",
+  cause: "error",
+  message: "model provider returned 502",
+};
+
+// Valid: the cancelled branch carries TurnStateCancelled.reason, an enum.
+const failedByCancel: MissionFailedEvent = {
+  type: "mission.failed",
+  mission_id: "mission-001",
+  cause: "cancelled",
+  reason: "client-cancelled",
+};
+
+// Invalid: cancellation has no message on the wire. If this stops erroring,
+// the branches have been collapsed and the four-value reason enum is being
+// flattened into synthesised prose.
+const cancelWithMessage: MissionFailedEvent = {
+  type: "mission.failed",
+  mission_id: "mission-001",
+  cause: "cancelled",
+  // @ts-expect-error - the cancelled branch takes `reason`, never `message`
+  message: "cancelled",
+};
+
+// Invalid: a reason TrueForge does not define.
+const inventedReason: MissionFailedEvent = {
+  type: "mission.failed",
+  mission_id: "mission-001",
+  cause: "cancelled",
+  // @ts-expect-error - not a TurnCancelledReason value
+  reason: "gave-up",
+};
+
+// A failure must never be expressible as a verdict: VerdictLabel is closed,
+// so force-fitting a crash into mission.verdict cannot type-check.
+const failureIsNotAVerdict: MissionEvent = {
+  type: "mission.verdict",
+  mission_id: "mission-001",
+  // @ts-expect-error - "error" is not a VerdictLabel; failures use mission.failed
+  verdict: "error",
+  summary: "the turn crashed",
+};
+
+void failedByError;
+void failedByCancel;
+void cancelWithMessage;
+void inventedReason;
+void failureIsNotAVerdict;

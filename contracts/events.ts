@@ -94,6 +94,18 @@ export interface ToolApprovalResume {
   approval: { status: ApprovalStatus; reason?: string };
 }
 
+/**
+ * Why a turn was cancelled. Exactly TrueForge's `TurnStateCancelledReason`
+ * enum, verified against a running server's openapi.json (T-037) — not a
+ * paraphrase, and deliberately not collapsed to free text: `abandoned` and
+ * `client-cancelled` mean different things to a human reading the cockpit.
+ */
+export type TurnCancelledReason =
+  | "server-execution-timeout"
+  | "client-cancelled"
+  | "cancelled-for-next-turn"
+  | "abandoned";
+
 /** Reconnects use GET /turns/{id}/subscribe?after_sequence_number=N */
 export interface TurnStreamSubscription {
   turn_id: string;
@@ -139,8 +151,27 @@ export interface CorrespondenceHistory {
   domains_used: string[];
 }
 
-/** §10's IDENTITY lane has no dedicated tool — derived from ParsedMessage
- *  fields. Worded from the diagram text; see §8 (needs O1/O2 confirmation). */
+/**
+ * §10's IDENTITY lane has no dedicated tool — derived from ParsedMessage
+ * fields. Worded from the diagram text; see §8 (needs O1/O2 confirmation).
+ *
+ * NO PRODUCER EXISTS for `lookalike_domain`/`lookalike_of` (T-037, verified
+ * against every module in tools/imports_mcp). When they have not been
+ * computed, a translator MUST NOT emit this event with `lookalike_domain:
+ * false` — both cockpit render sites turn that into the words "No lookalike
+ * domain detected", asserting a clean security finding nothing ever checked.
+ *
+ * The supported representation of "not determined" is **absence**: emit no
+ * `mission.evidence` event for this lane at all. An empty lane is an
+ * already-handled, already-tested state (cockpit commit f9a19bd, T-052) and
+ * renders as "Waiting…"/"Nothing reported", which is honest. Note also that
+ * widening `lookalike_domain` to `boolean | null` would NOT help — `null` is
+ * falsy, so both render sites take the identical branch and print the same
+ * false negative.
+ *
+ * `from_address`/`display_name`/`reply_to` are not lost by that absence:
+ * they already reach the cockpit on `mission.message_received`'s ParsedMessage.
+ */
 export interface IdentityEvidence {
   from_address: string;
   display_name: string | null;
@@ -284,6 +315,47 @@ export interface MissionCompleteEvent {
   spoken_verdict: string; // §17 2:40-3:00 — Web Speech API text (T-043)
 }
 
+/**
+ * A turn that ended without completing. Added in T-037 because nothing else
+ * could carry it honestly: `VerdictLabel` is a closed
+ * malicious|suspicious|legitimate union, so a crash is not expressible as a
+ * verdict, and `mission.complete` means finished and carries the
+ * `spoken_verdict` T-043 reads aloud. Without this variant the cockpit's
+ * `missionDone` (derived solely from `mission.complete`) never becomes true
+ * on a failed turn and every stage renders as in-progress forever.
+ *
+ * Scope is deliberately *terminal turn failure only* — `TurnDoneEvent.state`
+ * has exactly three members and one of them is success, which is why `cause`
+ * has exactly two values. It is NOT a general error channel: a subagent's
+ * `ThreadStateError` and a model `refusal`/`content_filter` both occur inside
+ * a turn that still reaches `turn.done` normally, so neither leaves the
+ * mission unterminated, and both are already handled as evidence quality by
+ * agent.json's T-041 instruction. They are not force-fitted here.
+ *
+ * Each branch carries the field its own producer actually publishes, rather
+ * than one shared `message`: TrueForge's `TurnStateError` has a required
+ * `message` string, while `TurnStateCancelled` has no message at all — only a
+ * required four-value `reason` enum. Collapsing both into one string would
+ * have meant synthesising text and discarding that enum, which is the exact
+ * drift class T-037 exists to correct.
+ */
+export type MissionFailedEvent =
+  | {
+      type: "mission.failed";
+      mission_id: string;
+      cause: "error";
+      /** TrueForge TurnStateError.message — required there, always present. */
+      message: string;
+    }
+  | {
+      type: "mission.failed";
+      mission_id: string;
+      cause: "cancelled";
+      /** TrueForge TurnStateCancelled.reason — required there. No message
+       *  field exists on that state, so none is invented here. */
+      reason: TurnCancelledReason;
+    };
+
 export type MissionEvent =
   | MessageReceivedEvent
   | EvidenceEvent
@@ -293,3 +365,10 @@ export type MissionEvent =
   | ApprovalResolvedEvent
   | ActionExecutedEvent
   | MissionCompleteEvent;
+// NOT YET IN THE UNION — deliberate, see MissionFailedEvent above.
+// `stageOf` and `describeEvent` in cockpit/src/missionPlan.ts are exhaustive
+// switches with no default, so adding `| MissionFailedEvent` here fails their
+// compilation (TS2366) until each gains a `case "mission.failed":`. That is
+// two lines in a file O3 owns, so the wiring is a disclosed handoff rather
+// than something this contract PR does unilaterally. Until it lands, the type
+// is defined and proven but nothing can emit it as a MissionEvent.
