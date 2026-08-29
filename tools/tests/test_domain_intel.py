@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
@@ -229,6 +230,37 @@ def test_crtsh_cache_entry_is_actually_persisted_to_the_sqlite_file(mock_get):
     stored_result = json.loads(stored_result_json)
     assert stored_result["available"] is True
     assert stored_result["age_days"] is not None
+
+
+@patch("imports_mcp.domain_intel.requests.get")
+def test_corrupt_cached_json_degrades_to_a_cache_miss_not_a_raise(mock_get):
+    """Qodo review, PR #81: _crtsh_cache_get() called json.loads() on the
+    cached `result` column with no error handling at all - a truncated
+    write, a manual edit, or a future schema change leaves a row that
+    crashes domain_intel() outright, contradicting this module's own
+    established "cache failures degrade to a cache miss" contract
+    (already held for sqlite3.Error, PR #60 finding #1 - this was the one
+    decode step that contract didn't actually cover)."""
+    conn = sqlite3.connect(domain_intel_module._crtsh_cache_db_path())
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS crtsh_cache "
+            "(domain TEXT PRIMARY KEY, cached_at REAL NOT NULL, result TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO crtsh_cache (domain, cached_at, result) VALUES (?, ?, ?)",
+            ("corrupt-cache.example", time.time(), "{not valid json at all"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    mock_get.side_effect = [_mock_response(200, RDAP_SUCCESS), _mock_response(200, CRTSH_SUCCESS)]
+
+    result = domain_intel("corrupt-cache.example")
+
+    assert result["cert"]["available"] is True
+    assert mock_get.call_count == 2  # RDAP + crt.sh - genuinely re-fetched, not crashed
 
 
 @patch("imports_mcp.domain_intel.sqlite3.connect")

@@ -190,7 +190,22 @@ def _crtsh_cache_get(domain: str) -> dict[str, Any] | None:
     if time.time() - cached_at >= CRTSH_CACHE_TTL_SECONDS:
         _crtsh_db_execute("DELETE FROM crtsh_cache WHERE domain = ?", (domain,))
         return None
-    return json.loads(result_json)
+    try:
+        result = json.loads(result_json)
+    except (ValueError, TypeError):
+        # A truncated write, manual edit, or future schema change can leave
+        # a row whose `result` column isn't valid JSON - this cache is a
+        # performance optimization, not a correctness-critical store, the
+        # same "degrade instead of raising" contract _crtsh_db_execute()
+        # already holds SQLite errors to (Qodo review, PR #81: this one
+        # decode step was the gap that contract didn't actually cover).
+        # Drop the bad row so it doesn't keep failing on every lookup.
+        _crtsh_db_execute("DELETE FROM crtsh_cache WHERE domain = ?", (domain,))
+        return None
+    if not isinstance(result, dict):
+        _crtsh_db_execute("DELETE FROM crtsh_cache WHERE domain = ?", (domain,))
+        return None
+    return result
 
 
 def _crtsh_cache_set(domain: str, result: dict[str, Any]) -> None:
