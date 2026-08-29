@@ -6,7 +6,11 @@ $MailpitUrl = if ($env:MAILPIT_URL) {
     "http://localhost:8025"
 }
 
-$FixturesDir = Join-Path $PSScriptRoot "fixtures"
+$FixturesDir = if ($env:FIXTURES_DIR) {
+    $env:FIXTURES_DIR
+} else {
+    Join-Path $PSScriptRoot "fixtures"
+}
 
 $fixtures = @(
     Get-ChildItem (Join-Path $FixturesDir "malicious") -Filter "*.json" |
@@ -30,6 +34,9 @@ foreach ($fixture in $fixtures) {
     $count++
     Write-Host "Seeded $($fixture.Name) [$($response.ID)]"
 }
-
+if ($count -eq 0) {
+    Write-Error "Error: no Range fixture files found."
+    exit 1
+}
 Write-Host ""
 Write-Host "Seeded $count Range fixtures into Mailpit."

@@ -133,3 +133,14 @@ def test_notify_impersonated_delivers_into_mailpit(running_server):
     assert any("impersonating you" in s for s in subjects), (
         f"no impersonation notice found in Mailpit; subjects seen: {subjects[:5]}"
     )
+
+
+# NOTE (T-033, Qodo PR #40 finding #3): there is deliberately NO live
+# file_abuse_report test here. Calling that tool over the wire performs a real
+# RDAP lookup against the production rdap.org service, which is third-party
+# infrastructure this suite has no business querying on every opt-in run — and
+# the test could never have demonstrated a delivery anyway, because a reserved
+# .example domain publishes no abuse contact, so its own assertion was
+# `sent: False`. It cost a production API call to prove nothing. The tool's
+# behaviour is fully covered by the mocked tests in test_file_abuse_report.py,
+# which mock RDAP and SMTP both.

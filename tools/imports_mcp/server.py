@@ -25,6 +25,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from imports_mcp.detonate import detonate as _detonate
 from imports_mcp.domain_intel import domain_intel as _domain_intel
+from imports_mcp.file_abuse_report import file_abuse_report as _file_abuse_report
 from imports_mcp.normaliser import parse_message as _parse_message
 from imports_mcp.notify_impersonated import MAX_ADDRESS_LENGTH, _ADDRESS_RE
 from imports_mcp.notify_impersonated import notify_impersonated as _notify_impersonated
@@ -240,6 +241,34 @@ def notify_impersonated(address: str, evidence: str) -> dict[str, Any]:
         # rather than trying to be permissive.
         raise ToolError(f"{address!r} is not a valid email address")
     return _notify_impersonated(address, evidence)
+
+
+@mcp.tool()
+def file_abuse_report(domain: str, evidence: str) -> dict[str, Any]:
+    """Email an abuse report to the domain's RDAP-published abuse contact.
+
+    **Gated (T-034):** TrueForge pauses this call for a human licence
+    decision before it runs — one of the four sequential gates (§10/§17).
+    Approval is the harness's job, never checked here.
+
+    The abuse mailbox is looked up from RDAP via domain_intel, not passed in.
+    Refuses to send unless the SMTP destination is the local Range, unless
+    ALLOW_EXTERNAL_SMTP=1 is deliberately set: the recipient is a real
+    registrar's abuse mailbox, and CLAUDE.md trap #6 forbids mailing one
+    during testing.
+    """
+    domain = domain.strip()
+    evidence = evidence.strip()
+    if not domain:
+        raise ToolError("domain must not be empty")
+    if not evidence:
+        # Without a reference the registrar receives an unactionable report.
+        raise ToolError("evidence must not be empty")
+    if len(domain) > MAX_DOMAIN_LENGTH or not _DOMAIN_RE.match(domain):
+        # Same boundary check domain_intel uses: reject anything that isn't
+        # hostname syntax before it is ever used to build an RDAP request.
+        raise ToolError(f"{domain!r} is not a valid domain name")
+    return _file_abuse_report(domain, evidence)
 
 
 if __name__ == "__main__":

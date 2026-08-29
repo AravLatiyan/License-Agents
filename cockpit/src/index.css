@@ -33,6 +33,55 @@ body {
   border: 0;
 }
 
+/* Shared panel chrome (T-044) — every top-level section on the page uses
+   the same heading treatment and vertical rhythm. Consolidated from what
+   were five separate copies of the same two rules (one per panel, added
+   task by task) into one place each, so a future change can't apply to
+   four of five panels and miss the fifth the way `.evidence-lane__empty`'s
+   opacity drifted below (Qodo never had a reason to catch it - nothing
+   compared the five panels against each other). */
+.evidence-lanes,
+.detonation-panel,
+.verdict-panel,
+.approval-panel,
+.mission-view,
+.spoken-verdict {
+  margin: 16px 0;
+}
+
+.detonation-panel h2,
+.verdict-panel h2,
+.approval-panel h2,
+.mission-view h2,
+.spoken-verdict h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+/* Interactive affordance (T-044) — the two button-bearing panels
+   (ApprovalPanel, SpokenVerdict) had no hover/focus-visible feedback at
+   all, and disabled state used two different cursors (`not-allowed` vs
+   `default`) for the same meaning. One rule covers every button under
+   `.cockpit`, present and future, rather than repeating per panel. */
+.cockpit button {
+  cursor: pointer;
+}
+
+.cockpit button:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.cockpit button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.cockpit button:disabled {
+  cursor: not-allowed;
+}
+
 /* Mission view — the plan tree (T-051). One top-level <li> per §10 stage;
    each stage's own children (evidence lanes, licence gates) are a nested
    <ol> of the same node markup, one level indented. */
@@ -122,7 +171,6 @@ body {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
-  margin: 16px 0;
 }
 
 @media (max-width: 640px) {
@@ -147,7 +195,10 @@ body {
 
 .evidence-lane__empty {
   margin: 0;
-  opacity: 0.6;
+  /* Matches every other panel's "waiting" placeholder opacity (0.45) -
+     was 0.6, the one outlier, unnoticed because nothing compared the
+     panels against each other (T-044). */
+  opacity: 0.45;
   font-size: 0.9rem;
 }
 
@@ -192,17 +243,6 @@ body {
 }
 
 /* Detonation panel (T-053) */
-.detonation-panel {
-  margin: 16px 0;
-}
-
-.detonation-panel h2 {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0 0 8px;
-}
-
 .detonation-panel__empty {
   opacity: 0.45;
 }
@@ -290,17 +330,6 @@ body {
 /* Verdict panel (T-054) - the demo's plain-language judgment moment (§17,
    1:25-1:50), the most visually prominent panel: bigger type than
    everything else, color-coded by verdict. */
-.verdict-panel {
-  margin: 16px 0;
-}
-
-.verdict-panel h2 {
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0 0 8px;
-}
-
 .verdict-panel__empty {
   opacity: 0.45;
 }
@@ -347,4 +376,141 @@ body {
 }
 .verdict--legitimate .verdict__label {
   color: seagreen;
+}
+
+/* Approval panel (T-036) — LICENCE REQUIRED, §17 1:50-2:20. Four sequential
+   per-tool-call gates (§6, 2026-08-24), not one modal — each card mirrors
+   TrueForge's own native approval UI (literal JSON request) in this app's
+   styling. Presentation only: Allow/Deny render disabled, see the panel's
+   own header comment for why (§8's undecided translation layer). */
+.approval-gates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-gate {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.approval-gate__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.approval-gate__index {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.approval-gate__title {
+  font-weight: 600;
+}
+
+.approval-gate__banner {
+  margin: 8px 0 4px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  /* plain `orange` text is ~1.97:1 against white - the same WCAG contrast
+     failure already fixed for the suspicious-verdict label (PR #43) with
+     #b45309, ~5:1/~4.2:1 on white/black (Qodo, PR #52 finding #1). */
+  color: #b45309;
+}
+
+.approval-gate__request {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.approval-gate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-gate__actions button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  font: inherit;
+  opacity: 0.6;
+}
+
+.approval-gate__note {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+
+.approval-gate__outcome {
+  margin: 4px 0 0;
+}
+
+.approval-gate__outcome--empty {
+  opacity: 0.45;
+}
+
+.approval-gate--pending {
+  opacity: 0.45;
+}
+
+.approval-gate--requested {
+  border-color: orange;
+}
+
+.approval-gate--allowed {
+  border-color: color-mix(in srgb, seagreen 60%, transparent);
+}
+
+.approval-gate--denied {
+  border-color: crimson;
+}
+.approval-gate--denied .approval-gate__outcome {
+  color: crimson;
+  font-weight: 600;
+}
+
+.approval-gate--executed {
+  border-color: seagreen;
+}
+
+/* Spoken verdict (T-043) — the demo's closing beat (§17, 2:40-3:00). */
+.spoken-verdict__empty {
+  opacity: 0.45;
+}
+
+.spoken-verdict__text {
+  font-size: 1.1rem;
+  font-style: italic;
+  margin: 0 0 10px;
+}
+
+.spoken-verdict button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  font: inherit;
+}
+
+.spoken-verdict button:disabled {
+  opacity: 0.6;
+}
+
+.spoken-verdict__unsupported {
+  opacity: 0.6;
+  font-size: 0.9rem;
 }

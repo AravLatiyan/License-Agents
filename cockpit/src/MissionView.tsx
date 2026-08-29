@@ -36,10 +36,17 @@ function PlanNodeItem({ node }: { node: PlanNode }) {
 export function MissionView({ events }: { events: MissionEvent[] }) {
   const plan = buildMissionPlan(events);
   return (
-    <ol className="plan-tree">
-      {plan.map((node) => (
-        <PlanNodeItem key={node.id} node={node} />
-      ))}
-    </ol>
+    <section className="mission-view" aria-label="Mission plan">
+      {/* T-044: every other panel has its own heading (Evidence, Detonation,
+          Verdict, Licence gates, Spoken verdict) - this one didn't, a real
+          labeling gap for anyone scanning the page, not just a cosmetic
+          nit. Matches the shared heading style, not a one-off. */}
+      <h2>Mission plan</h2>
+      <ol className="plan-tree">
+        {plan.map((node) => (
+          <PlanNodeItem key={node.id} node={node} />
+        ))}
+      </ol>
+    </section>
   );
 }
