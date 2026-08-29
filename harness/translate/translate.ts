@@ -157,6 +157,20 @@ export function createTranslator(options: TranslatorOptions): Translator {
     return [];
   }
 
+  // KNOWN LIMITATION (Qodo, PR #73). If one tool.approval_required carries
+  // several tool calls, this emits one mission.approval_required per call, so
+  // the cockpit would show several LICENCE REQUIRED panels at once — against
+  // §6/CLAUDE.md's "four sequential per-tool-call gates, not one modal with
+  // four checkboxes."
+  //
+  // Not fixable here, and deliberately not faked. Serialising would mean
+  // holding gates back until the previous one resolves, and a resolution
+  // arrives as our own POSTed user.tool_approval, which this stream never
+  // carries — the translator has no way to observe it. Whether gates arrive
+  // one at a time is therefore a property of how the agent batches its calls
+  // (agent.json's prompt), not something a stream translator can enforce.
+  // Dropping the extras instead would silently lose a licence gate, which is
+  // strictly worse than showing them early.
   function handleApprovalRequired(raw: Record<string, unknown>): MissionEvent[] {
     const toolCalls = raw.tool_calls;
     if (!isArr(toolCalls)) return [];
