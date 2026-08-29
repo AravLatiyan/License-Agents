@@ -412,13 +412,18 @@ test("tool.response for a gated action -> mission.action_executed, gate_index ti
   });
 });
 
-test("mission.action_executed's result_summary falls back to \"\" when parsed .note isn't a string", async (t) => {
+test("a gated-action result without a string .note is dropped, not reported as executed", async (t) => {
+  // Qodo, PR #75 finding #2: {} (or any payload without a string `note`)
+  // used to still produce mission.action_executed with result_summary: "" -
+  // falsely claiming the action ran. Every one of the four gated tools
+  // shares `note` across success and failure, so its absence means the
+  // payload isn't a real tool result at all.
   await t.test("no note field at all", () => {
     const translator = createTranslator({ missionId: MISSION_ID });
     translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
     translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
     const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ ok: true })));
-    assert.equal((result[0] as { result_summary: string }).result_summary, "");
+    assert.deepEqual(result, []);
   });
 
   await t.test("note field present but not a string", () => {
@@ -426,8 +431,54 @@ test("mission.action_executed's result_summary falls back to \"\" when parsed .n
     translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
     translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
     const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: 12345 })));
-    assert.equal((result[0] as { result_summary: string }).result_summary, "");
+    assert.deepEqual(result, []);
   });
+
+  await t.test("a genuine string note still produces the event", () => {
+    const translator = createTranslator({ missionId: MISSION_ID });
+    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
+    translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
+    const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: "rule created" })));
+    assert.equal((result[0] as { result_summary: string }).result_summary, "rule created");
+  });
+});
+
+test("tool.approval_required missing id/created_at/thread_id is dropped entirely (Qodo, PR #75 finding #1)", () => {
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "quarantine", { message_ids: ["m1"] })]));
+
+  const missingId = { type: "tool.approval_required", created_at: "2026-08-29T00:00:00Z", thread_id: "main", tool_calls: [ref("call-1", "evt-1")] };
+  assert.deepEqual(translator.push(missingId), []);
+
+  const missingCreatedAt = { type: "tool.approval_required", id: "appr-1", thread_id: "main", tool_calls: [ref("call-1", "evt-1")] };
+  assert.deepEqual(translator.push(missingCreatedAt), []);
+
+  const missingThreadId = { type: "tool.approval_required", id: "appr-1", created_at: "2026-08-29T00:00:00Z", tool_calls: [ref("call-1", "evt-1")] };
+  assert.deepEqual(translator.push(missingThreadId), []);
+
+  // Same call, now with a genuinely complete event - proves the drops above
+  // were about the missing metadata, not something else about this call.
+  const complete = translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
+  assert.equal(complete.length, 1);
+});
+
+test("a url_reputation-shaped result is rejected for domain_intel and vice versa (Qodo, PR #75 finding #3)", () => {
+  const urlReputationShape = JSON.stringify({ url: "hxxps://evil.example.com", listed: false, tags: [] });
+  const domainIntelShape = JSON.stringify({
+    domain: "evil.example.com",
+    registration_date: null,
+    registrar: null,
+    abuse_contact: null,
+    cert_issued_at: null,
+  });
+
+  const t1 = createTranslator({ missionId: MISSION_ID });
+  t1.push(modelMessage("evt-1", "main", [toolCall("call-1", "domain_intel", { domain: "evil.example.com" })]));
+  assert.deepEqual(t1.push(toolResponse("evt-2", "main", "call-1", urlReputationShape)), []);
+
+  const t2 = createTranslator({ missionId: MISSION_ID });
+  t2.push(modelMessage("evt-1", "main", [toolCall("call-1", "url_reputation", { url: "hxxps://evil.example.com" })]));
+  assert.deepEqual(t2.push(toolResponse("evt-2", "main", "call-1", domainIntelShape)), []);
 });
 
 test("tool.response for an unknown tool name -> []", () => {
