@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MissionEvent } from "../../contracts/events";
 
 /**
@@ -23,13 +23,22 @@ export function SpokenVerdict({ events }: { events: MissionEvent[] }) {
   );
   const [speaking, setSpeaking] = useState(false);
   const synth = getSpeechSynthesis();
+  // The utterance this component itself started, if any - lets a callback
+  // tell whether it belongs to the current attempt before touching state.
+  const activeUtterance = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Cancel any in-flight utterance if the text changes out from under it or
-  // the component unmounts - never leave a stale utterance talking over a
-  // newer verdict.
+  // the component unmounts, and reset `speaking` synchronously here rather
+  // than relying solely on the cancelled utterance's own onend/onerror
+  // firing - some Web Speech implementations don't guarantee either fires
+  // after cancel() (Qodo, PR #53 finding #1 - a documented WebKit
+  // regression), which would otherwise strand the button on "Speaking…"
+  // forever once a newer verdict replaces the one mid-playback.
   useEffect(() => {
     return () => {
       synth?.cancel();
+      activeUtterance.current = null;
+      setSpeaking(false);
     };
   }, [event?.spoken_verdict, synth]);
 
@@ -37,8 +46,18 @@ export function SpokenVerdict({ events }: { events: MissionEvent[] }) {
     if (!synth || !event) return;
     synth.cancel();
     const utterance = new SpeechSynthesisUtterance(event.spoken_verdict);
-    utterance.onend = () => setSpeaking(false);
-    utterance.onerror = () => setSpeaking(false);
+    activeUtterance.current = utterance;
+    // Only the utterance a given click started is allowed to clear
+    // `speaking` - guards against a stale utterance's callback firing after
+    // a newer attempt has already taken over.
+    const finish = () => {
+      if (activeUtterance.current === utterance) {
+        activeUtterance.current = null;
+        setSpeaking(false);
+      }
+    };
+    utterance.onend = finish;
+    utterance.onerror = finish;
     setSpeaking(true);
     synth.speak(utterance);
   }
