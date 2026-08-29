@@ -1,13 +1,15 @@
-"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021).
+"""imports-mcp — Slice 1 + 2 skeleton (T-012, T-020, T-021, T-026, T-031).
 
 Streamable HTTP, stateless per request. This is the Python-SDK equivalent of
 the bring-your-own-mcp cookbook example (T-004): same transport, same
 "register in TrueForge Settings, reference by name in agent.json" pattern.
 
 Tools:
-  parse_message   - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
-  domain_intel    - RDAP registration/abuse + crt.sh cert age (Slice 2)
-  url_reputation  - URLhaus exact-URL lookup (Slice 2)
+  parse_message        - hardcoded-fixture RFC822 parse (Slice 1, no IMAP yet)
+  domain_intel         - RDAP registration/abuse + crt.sh cert age (Slice 2)
+  url_reputation       - URLhaus exact-URL lookup (Slice 2)
+  detonate             - text-mode redirect-follow + form analysis (Slice 2)
+  notify_impersonated  - gated: email the impersonated party (Slice 3)
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from imports_mcp.detonate import detonate as _detonate
 from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.file_abuse_report import file_abuse_report as _file_abuse_report
 from imports_mcp.normaliser import parse_message as _parse_message
@@ -193,6 +196,22 @@ def url_reputation(url: str) -> dict[str, Any]:
     if not url:
         raise ToolError("url must not be empty")
     return _url_reputation(url)
+
+
+@mcp.tool()
+def detonate(url: str) -> dict[str, Any]:
+    """Text-mode detonation: follow redirects, parse the final HTML, and
+    flag forms that ask for a password and post cross-domain.
+
+    No screenshot — that's the chromium-in-Daytona path, which T-035 found
+    genuinely blocked (no Daytona key, no snapshot mechanism). A malformed
+    or unreachable URL degrades to `{url, redirect_chain, error}` — never
+    raises — same as every other tool's graceful-degradation shape.
+    """
+    url = url.strip()
+    if not url:
+        raise ToolError("url must not be empty")
+    return _detonate(url)
 
 
 @mcp.tool()

@@ -48,3 +48,18 @@ def test_domain_intel_empty_domain_returns_error_over_the_wire(running_server):
 def test_url_reputation_empty_url_returns_error_over_the_wire(running_server):
     _, result = call_tool(running_server, "url_reputation", {"url": ""})
     assert result.is_error
+
+
+def test_detonate_empty_url_returns_error_over_the_wire(running_server):
+    _, result = call_tool(running_server, "detonate", {"url": ""})
+    assert result.is_error
+
+
+def test_detonate_refuses_private_target_over_the_wire(running_server):
+    """No live network call and no opt-in needed — this exercises the SSRF
+    guard against the server's own loopback address, still fully
+    deterministic and local per §13's safety rules."""
+    tools, result = call_tool(running_server, "detonate", {"url": "http://127.0.0.1:1/x"})
+    assert "detonate" in [t.name for t in tools.tools]
+    assert not result.is_error
+    assert "refused private/internal network target" in result.content[0].text
