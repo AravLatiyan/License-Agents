@@ -277,7 +277,11 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   const indexOf = (stage: StageId) => STAGE_ORDER.indexOf(stage);
 
   // --- message -----------------------------------------------------------
-  const messageEvent = events.find(
+  // findLast, not find (T-047, on §7's standing note from T-053). A re-emitted
+  // message is the CURRENT one; taking the first would pin the panel to a
+  // stale parse. §7 recorded this as having no known trigger — T-039/T-046
+  // created one, since a resumed turn genuinely re-emits events.
+  const messageEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.message_received" }> => e.type === "mission.message_received",
   );
   const messageNode: PlanNode = {
@@ -375,7 +379,12 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   // Same handoff as missionDone above: the "complete" node's own detail text
   // must come from whichever terminal event actually happened, not just the
   // success one - describeEvent already renders both.
-  const completeEvent = events.find(
+  // findLast for the same reason, and it matters more here than anywhere else
+  // in this file: this lookup matches TWO event types, so with `find` a
+  // mission that completed and then failed would render the earlier SUCCESS
+  // and hide the failure. That is the worst possible direction for this
+  // particular node to be wrong in (T-047).
+  const completeEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.complete" | "mission.failed" }> =>
       e.type === "mission.complete" || e.type === "mission.failed",
   );
