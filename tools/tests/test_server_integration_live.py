@@ -45,7 +45,13 @@ RUN_LIVE_DOMAIN_INTEL_TESTS = os.environ.get("RUN_LIVE_DOMAIN_INTEL_TESTS") == "
 # (`docker compose up` in range/: Mailpit on 1025 SMTP + 8025 HTTP). Opt in
 # explicitly — the default suite must never require Docker to be running.
 RUN_LIVE_MAILPIT_TESTS = os.environ.get("RUN_LIVE_MAILPIT_TESTS") == "1"
-MAILPIT_HTTP = os.environ.get("MAILPIT_URL", "http://localhost:8025")
+# .strip() or default, not .get(k, default) - a blank MAILPIT_URL= (what
+# .env.example ships) is a *set* env var, so .get()'s default never applies
+# and this would silently resolve to "" (Qodo, PR #64 review, "Blank
+# mailpit url breaks live test") - the same fallback semantics
+# correspondence_history._mailpit_url() already uses, and the exact
+# SMTP_HOST bug class Qodo caught on PR #29.
+MAILPIT_HTTP = os.environ.get("MAILPIT_URL", "").strip() or "http://localhost:8025"
 
 
 @pytest.mark.skipif(
@@ -150,8 +156,15 @@ def test_correspondence_history_finds_a_message_seeded_directly_into_mailpit(run
     """
     import urllib.request
 
-    address = "live-check@northgate-trust.example"
-    domain = "northgate-trust.example"
+    # A domain/address seen nowhere else - not shared with any range/fixtures/
+    # sender (northgate-trust*/meridian-courier*/universal-imports* are all
+    # already heavily seeded by seed.sh, T-060). correspondence_history
+    # matches on address-OR-domain, so reusing one of those would let this
+    # test's assertions pass on pre-existing fixture mail alone, proving
+    # nothing about the seed call this test actually makes (Qodo, PR #64
+    # review, "Seed lookup matches stale mail").
+    address = "seed-proof@t022-live-check.example"
+    domain = "t022-live-check.example"
     send_body = json.dumps(
         {
             "From": {"Email": address, "Name": "Live Check"},
