@@ -7,6 +7,7 @@ import { createTranslator } from "../../harness/translate/translate.ts";
 // above. The type-only import below does not: type imports are erased before
 // Node ever resolves them.
 import { assertMissionEvent } from "./missionSource.ts";
+import type { ApprovalStatus, MissionEvent, ToolApprovalResume } from "../../contracts/events";
 import type { MissionEventSource } from "./missionSource";
 
 /**
@@ -123,10 +124,48 @@ function idOf(value: unknown): string | null {
  * that have no producer (identity evidence, verdict, approval_resolved).
  * Nothing is re-derived here.
  */
-export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEventSource {
+/**
+ * A live mission: the read-only event source, plus the one write the cockpit
+ * needs — submitting a human's licence decision.
+ *
+ * `MissionEventSource` is deliberately one-way and stays that way: it is O3's
+ * type and every consumer of it assumes read-only. The submit path is returned
+ * beside it instead, so nothing that already takes a `MissionEventSource` has
+ * to change.
+ */
+export interface TrueForgeMission {
+  source: MissionEventSource;
+  /**
+   * Resume the paused turn with a human's decision on one gate (T-046).
+   *
+   * TrueForge pauses the turn on the gated tool call itself; resuming means
+   * POSTing a new turn whose input is a `ToolApprovalResume`. Returns the
+   * events that decision produces locally — the `mission.approval_resolved`
+   * the stream can never carry, plus whichever gate `resolveGate` releases
+   * next. Returns `[]` before the session exists (nothing to resume yet).
+   */
+  submitApproval(decision: ApprovalDecision): Promise<MissionEvent[]>;
+}
+
+export interface ApprovalDecision {
+  gateIndex: 1 | 2 | 3 | 4;
+  threadId: string;
+  toolCallId: string;
+  status: ApprovalStatus;
+  reason?: string;
+}
+
+export function createTrueForgeMission(options: TrueForgeSourceOptions): TrueForgeMission {
   const doFetch = options.fetchImpl ?? fetch;
 
-  return async function* () {
+  // Set once the stream opens. `submitApproval` needs both, and neither
+  // exists until the generator has actually run — a decision cannot precede
+  // the gate that prompted it, so refusing until then is correct rather than
+  // a limitation.
+  let sessionId: string | null = null;
+  let translator: ReturnType<typeof createTranslator> | null = null;
+
+  const source: MissionEventSource = async function* () {
     // An AbortController tied to this generator's lifetime. `useMissionEvents`
     // signals cancellation by flipping a boolean, which cannot stop an
     // in-flight fetch — and React StrictMode invokes effects twice in dev, so
@@ -146,10 +185,11 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
     if (!sessionResponse.ok) {
       throw new Error(`could not create session: HTTP ${sessionResponse.status}`);
     }
-    const sessionId = idOf(await sessionResponse.json());
+    sessionId = idOf(await sessionResponse.json());
     if (!sessionId) throw new Error("session response carried no id");
 
-    const translator = createTranslator({ missionId: options.missionId ?? sessionId });
+    translator = createTranslator({ missionId: options.missionId ?? sessionId });
+    const activeTranslator = translator;
 
     const turnResponse = await doFetch(`${options.baseUrl}/sessions/${sessionId}/turns`, {
       method: "POST",
@@ -194,7 +234,7 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
             continue;
           }
 
-          for (const event of translator.push(raw)) {
+          for (const event of activeTranslator.push(raw)) {
             // The SAME runtime validation the fixture path applies. Skipping
             // it here had it backwards: fixture data is authored and trusted,
             // live data is neither, yet only the fixture was checked (Qodo,
@@ -222,4 +262,56 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
       abort.abort();
     }
   };
+
+  async function submitApproval(decision: ApprovalDecision): Promise<MissionEvent[]> {
+    const currentSession = sessionId;
+    const currentTranslator = translator;
+    if (!currentSession || !currentTranslator) return [];
+
+    const resume: ToolApprovalResume = {
+      type: "user.tool_approval",
+      thread_id: decision.threadId,
+      tool_call_id: decision.toolCallId,
+      approval: decision.reason
+        ? { status: decision.status, reason: decision.reason }
+        : { status: decision.status },
+    };
+
+    const response = await doFetch(`${options.baseUrl}/sessions/${currentSession}/turns`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stream: false, input: [resume] }),
+    });
+    if (!response.ok) {
+      throw new Error(`could not submit approval: HTTP ${response.status}`);
+    }
+
+    // The stream has no wire event for "a human decided" — the 12-type union
+    // has nothing between tool.approval_required and the next turn.done — so
+    // this event is constructed here, by the only code that knows the decision
+    // was made because it just made it.
+    const resolved: MissionEvent = {
+      type: "mission.approval_resolved",
+      mission_id: options.missionId ?? currentSession,
+      gate_index: decision.gateIndex,
+      status: decision.status,
+      ...(decision.reason ? { reason: decision.reason } : {}),
+    };
+
+    // Releasing the next queued gate is the whole point of resolveGate, and
+    // until now nothing in the app ever called it — so a mission with more
+    // than one gate outstanding would show the first and silently withhold
+    // the rest. This is that missing caller.
+    return [resolved, ...currentTranslator.resolveGate(decision.gateIndex)];
+  }
+
+  return { source, submitApproval };
+}
+
+/**
+ * Back-compat shim: the read-only source on its own, for callers that do not
+ * need the submit path.
+ */
+export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEventSource {
+  return createTrueForgeMission(options).source;
 }

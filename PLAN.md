@@ -101,7 +101,7 @@ LAST UPDATED: 2026-08-30 03:19 · **T-039 merged (`4d05b06`) — the cockpit is 
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none)_ | | | | |
+| T-046 | O1 | 2026-08-30 03:33 IST | **2h** | Ship the submit path + `resolveGate` wiring behind the existing opt-in, leaving the buttons disabled when no live session is present (unchanged fixture behaviour). Do NOT invent a resume-cursor or a denial-reason UI |
 
 > Note (2026-08-30 02:07, O3 cross-owner sync): T-037 (the previous row) is done and merged (§4) — cleared on completion. Ran ~2h28min against its 2h box (started 23:39, PR #74 merged 02:06) — over, but the four PRs it took (§4) were still in active, productive Qodo-fix cycles the whole time, not stuck; noted rather than silently ignored.
 
@@ -505,6 +505,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 3 — the product (Day 3) ← *everything after this is cuttable* — *(empty; T-032 lives in §2, flagged blocked, not duplicated here)*
 
+- **T-046** [O1, cockpit integration disclosed to O3] Live Allow/Deny submission — **T-036's remaining half**, unblocked 2026-08-30 by T-037+T-039. §4 records T-036 as presentation-only; its buttons are still `disabled` because a real decision had nowhere to submit to. Now it does: POST a resuming turn whose input is `ToolApprovalResume` (the contract already exists), then call the translator's `resolveGate()` — which still has **no production caller**, so queued gates are never released in practice. This is the beat §17 and CLAUDE.md's qualifying test both turn on: the harness stops for a person, and the person actually decides. Needs no credits to build; only end-to-end verification does
 - **T-038** [O1] Resolve the `return_path` drift between `harness/agent.json` and `contracts/events.ts` — `agent.json` tells IDENTITY to report `return_path`; `IdentityEvidence` has no such field. **PLAN.md contradicts itself about which is right** (§4's T-024 Qodo-pass entry defends keeping it; §7's entry the same day logs its inclusion as the error), so the decision needs a human, not a guess. `harness/README.md:92`'s "matches `IdentityEvidence` exactly" claim is false today either way. Independent of T-037: with identity evidence now represented by absence (§6), the field list never reaches the wire. **Re-checked 2026-08-30: still true** — `IdentityEvidence` (`contracts/events.ts`) has exactly `from_address`/`display_name`/`reply_to`/`lookalike_domain`/`lookalike_of`, no `return_path`, even after T-037's own contract edits — genuinely untouched, not stale
 
 > Note (2026-08-30 03:19, O1): **T-039 removed — done and merged into `main` (§4, `4d05b06`), not merely picked.** Left listed here after completion in the first draft of this sync, which would have let a later session re-pick a finished task on the strength of a backlog line stating `App.tsx` still only replays the fixture — no longer true (Qodo, PR #82). T-032/T-035/T-038 untouched.

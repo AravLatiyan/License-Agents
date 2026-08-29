@@ -43,11 +43,13 @@ import type { MissionEvent } from "../../contracts/events.ts";
 // problem with that individual test.
 let parseSseFrames: typeof import("./trueForgeSource.ts").parseSseFrames;
 let trueForgeEventSource: typeof import("./trueForgeSource.ts").trueForgeEventSource;
+let createTrueForgeMission: typeof import("./trueForgeSource.ts").createTrueForgeMission;
 let loadError: unknown;
 try {
   const mod = await import("./trueForgeSource.ts");
   parseSseFrames = mod.parseSseFrames;
   trueForgeEventSource = mod.trueForgeEventSource;
+  createTrueForgeMission = mod.createTrueForgeMission;
 } catch (err) {
   loadError = err;
 }
@@ -480,5 +482,198 @@ test("live events are validated at the boundary, like fixture events are", async
     },
     /approval\.tool_calls/,
     "a malformed approval payload must be caught by the same validator the fixture path uses",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// D. T-046 — the human's licence decision
+// ---------------------------------------------------------------------------
+
+/** Drive a mission to the point where one gate is outstanding, capturing the
+ *  requests the source makes so a test can inspect the resume POST. */
+async function missionWithOneGateOutstanding(calls: Array<{ url: string; init?: RequestInit }>) {
+  const sse = sseText([
+    {
+      data: {
+        type: "model.message",
+        id: "mm-1",
+        thread_id: "main",
+        tool_calls: [
+          { id: "call-1", type: "function", function: { name: "quarantine", arguments: '{"message_ids":["m1"]}' } },
+        ],
+      },
+    },
+    {
+      data: {
+        type: "tool.approval_required",
+        id: "appr-1",
+        created_at: "2026-08-30T00:00:00Z",
+        thread_id: "main",
+        tool_calls: [{ id: "call-1", source_event_id: "mm-1" }],
+      },
+    },
+  ]);
+
+  let call = 0;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, json: async () => ({ id: "sess-1" }) } as unknown as Response;
+    if (call === 2) return { ok: true, status: 200, body: streamOf([sse]) } as unknown as Response;
+    return { ok: true, status: 200, json: async () => ({ id: "turn-2" }) } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+
+  const streamed = [];
+  for await (const event of mission.source()) streamed.push(event);
+  return { mission, streamed };
+}
+
+test("an Allow posts a user.tool_approval resume turn to the live session", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const { mission } = await missionWithOneGateOutstanding(calls);
+
+  const produced = await mission.submitApproval({
+    gateIndex: 1,
+    threadId: "main",
+    toolCallId: "call-1",
+    status: "allow",
+  });
+
+  const resume = calls[calls.length - 1];
+  assert.match(resume.url, /\/sessions\/sess-1\/turns$/, "the resume must target the live session");
+  const body = JSON.parse(String(resume.init?.body));
+  assert.deepEqual(body.input[0], {
+    type: "user.tool_approval",
+    thread_id: "main",
+    tool_call_id: "call-1",
+    approval: { status: "allow" },
+  });
+
+  // The stream has no wire event for "a human decided", so this event can only
+  // be constructed by the code that made the decision.
+  assert.equal(produced[0].type, "mission.approval_resolved");
+  assert.equal((produced[0] as { status: string }).status, "allow");
+});
+
+test("a Deny carries its reason through to the resume payload", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const { mission } = await missionWithOneGateOutstanding(calls);
+
+  const produced = await mission.submitApproval({
+    gateIndex: 1,
+    threadId: "main",
+    toolCallId: "call-1",
+    status: "deny",
+    reason: "sender not verified",
+  });
+
+  const body = JSON.parse(String(calls[calls.length - 1].init?.body));
+  assert.deepEqual(body.input[0].approval, { status: "deny", reason: "sender not verified" });
+  assert.equal((produced[0] as { reason?: string }).reason, "sender not verified");
+});
+
+// Until T-046 nothing in the app ever called resolveGate, so a mission with
+// more than one gate outstanding showed the first and silently withheld the
+// rest. Submitting a decision is that missing caller.
+test("submitting a decision releases the next queued licence gate", async () => {
+  const sse = sseText([
+    {
+      data: {
+        type: "model.message",
+        id: "mm-1",
+        thread_id: "main",
+        tool_calls: [
+          { id: "call-1", type: "function", function: { name: "quarantine", arguments: "{}" } },
+          { id: "call-2", type: "function", function: { name: "file_abuse_report", arguments: "{}" } },
+        ],
+      },
+    },
+    {
+      data: {
+        type: "tool.approval_required",
+        id: "appr-1",
+        created_at: "2026-08-30T00:00:00Z",
+        thread_id: "main",
+        tool_calls: [{ id: "call-1", source_event_id: "mm-1" }, { id: "call-2", source_event_id: "mm-1" }],
+      },
+    },
+  ]);
+
+  let call = 0;
+  const fetchImpl = (async () => {
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, json: async () => ({ id: "sess-1" }) } as unknown as Response;
+    if (call === 2) return { ok: true, status: 200, body: streamOf([sse]) } as unknown as Response;
+    return { ok: true, status: 200, json: async () => ({ id: "turn-2" }) } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+
+  const streamed = [];
+  for await (const event of mission.source()) streamed.push(event);
+  const gatesWhileStreaming = streamed.filter((e) => e.type === "mission.approval_required");
+  assert.equal(gatesWhileStreaming.length, 1, "gates are serialised: only the first is emitted");
+
+  const produced = await mission.submitApproval({
+    gateIndex: 1,
+    threadId: "main",
+    toolCallId: "call-1",
+    status: "allow",
+  });
+
+  const released = produced.filter((e) => e.type === "mission.approval_required");
+  assert.equal(released.length, 1, "deciding gate 1 must release gate 2");
+  assert.equal((released[0] as { gate_index: number }).gate_index, 2);
+});
+
+test("submitting before the session exists is a no-op, not a crash", async () => {
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl: (async () => ({ ok: true, status: 200 }) as unknown as Response) as unknown as typeof fetch,
+  });
+
+  // A decision cannot precede the gate that prompted it, so refusing here is
+  // correct rather than a limitation.
+  assert.deepEqual(await mission.submitApproval({ gateIndex: 1, threadId: "main", toolCallId: "c", status: "allow" }), []);
+});
+
+test("a failed resume POST surfaces as an error rather than a silent no-op", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const sse = sseText([{ data: { type: "turn.created", id: "e0", turn_id: "t1", previous_turn_id: null, state: { status: "running" }, thread_id: null } }]);
+  let call = 0;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    call += 1;
+    if (call === 1) return { ok: true, status: 200, json: async () => ({ id: "sess-1" }) } as unknown as Response;
+    if (call === 2) return { ok: true, status: 200, body: streamOf([sse]) } as unknown as Response;
+    return { ok: false, status: 412 } as unknown as Response;
+  }) as unknown as typeof fetch;
+
+  const mission = createTrueForgeMission({
+    baseUrl: "http://x/api/v1",
+    agentName: "universal-imports",
+    input: "raw email",
+    fetchImpl,
+  });
+  for await (const _e of mission.source()) { /* drain */ }
+
+  await assert.rejects(
+    () => mission.submitApproval({ gateIndex: 1, threadId: "main", toolCallId: "call-1", status: "allow" }),
+    /412/,
+    "a licence decision that did not reach TrueForge must not look like it did",
   );
 });
