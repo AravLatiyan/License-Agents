@@ -61,15 +61,11 @@ function stageOf(event: MissionEvent): StageId {
       return "gates";
     case "mission.complete":
     // A failed turn is terminal, same as a completed one - the mission is
-    // over either way, so it maps to the same final stage. T-037 handoff:
-    // this case exists only because `stageOf` is an exhaustive switch and
-    // `MissionEvent` gained `mission.failed`.
-    //
-    // Deliberately the minimal wiring: `missionDone` below still derives
-    // only from `mission.complete`, so a FAILED mission leaves the evidence
-    // lanes rendering "Waiting..." rather than settling to "Nothing
-    // reported". Changing that is a real rendering decision in O3's file,
-    // beyond the two cases the union needed, so it is left for O3.
+    // over either way, so it maps to the same final stage. `missionDone` and
+    // the "complete" node's own detail text (buildMissionPlan, below) both
+    // derive from mission.complete OR mission.failed for the same reason
+    // (Qodo, PR #71) - a failed mission now settles to "done" throughout the
+    // tree instead of rendering as active forever.
     case "mission.failed":
       return "complete";
   }
@@ -267,7 +263,12 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
 }
 
 export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
-  const missionDone = events.some((e) => e.type === "mission.complete");
+  // T-037 handoff (Qodo, PR #71): a mission.failed event is terminal, same as
+  // mission.complete (stageOf above already maps both to "complete") - but
+  // this line only checked mission.complete, so a failed mission never
+  // settled to "done" anywhere in the tree and stayed rendered as active
+  // forever.
+  const missionDone = events.some((e) => e.type === "mission.complete" || e.type === "mission.failed");
   const currentIndex = currentStageIndex(events);
   const indexOf = (stage: StageId) => STAGE_ORDER.indexOf(stage);
 
@@ -367,8 +368,12 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   };
 
   // --- complete ------------------------------------------------------------
+  // Same handoff as missionDone above: the "complete" node's own detail text
+  // must come from whichever terminal event actually happened, not just the
+  // success one - describeEvent already renders both.
   const completeEvent = events.find(
-    (e): e is Extract<MissionEvent, { type: "mission.complete" }> => e.type === "mission.complete",
+    (e): e is Extract<MissionEvent, { type: "mission.complete" | "mission.failed" }> =>
+      e.type === "mission.complete" || e.type === "mission.failed",
   );
   const completeNode: PlanNode = {
     id: "complete",

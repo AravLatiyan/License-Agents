@@ -22,11 +22,21 @@ const KNOWN_TYPES = new Set<MissionEvent["type"]>([
   "mission.approval_resolved",
   "mission.action_executed",
   "mission.complete",
+  "mission.failed",
 ]);
 
 const KNOWN_LANES = new Set(["infrastructure", "identity", "history"]);
 const GATE_INDICES = new Set([1, 2, 3, 4]);
 const ACTION_NAMES = new Set(["quarantine", "notify_impersonated", "create_block_rule", "file_abuse_report"]);
+/** Exactly TrueForge's TurnStateCancelledReason enum (contracts/events.ts),
+ *  same closed set harness/translate/translate.ts's own isTurnCancelledReason
+ *  guards against on the producing side. */
+const TURN_CANCELLED_REASONS = new Set([
+  "server-execution-timeout",
+  "client-cancelled",
+  "cancelled-for-next-turn",
+  "abandoned",
+]);
 
 // --- small structural guards, no validation library - kept dependency-free ---
 
@@ -226,6 +236,21 @@ export function assertMissionEvent(value: unknown, index: number): MissionEvent 
       break;
     case "mission.complete":
       if (!isStr(value.spoken_verdict)) fail(index, "spoken_verdict: expected string");
+      break;
+    case "mission.failed":
+      // Discriminated on `cause` - each branch has its own required field
+      // (contracts/events.ts's MissionFailedEvent union), so checking `cause`
+      // alone would let a "cancelled" event through with no `reason`, or an
+      // "error" event through with no `message`.
+      if (value.cause === "error") {
+        if (!isStr(value.message)) fail(index, "message: expected string when cause is error");
+      } else if (value.cause === "cancelled") {
+        if (typeof value.reason !== "string" || !TURN_CANCELLED_REASONS.has(value.reason)) {
+          fail(index, `reason: invalid value ${JSON.stringify(value.reason)}`);
+        }
+      } else {
+        fail(index, `cause: expected error|cancelled, got ${JSON.stringify(value.cause)}`);
+      }
       break;
   }
 
