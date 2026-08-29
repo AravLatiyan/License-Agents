@@ -68,6 +68,16 @@ _DOMAIN_RE = re.compile(
 )
 MAX_DOMAIN_LENGTH = 253
 
+# quarantine (T-030) now does one GET+PUT pair per message (Qodo, PR #67
+# finding #1 - Mailpit's tag PUT overwrites, so each message's existing tags
+# have to be read first), so an unbounded message_ids list means an
+# unbounded number of live round-trips per call, not just a large request
+# body (Qodo, PR #67 finding #4). One mission quarantining more than a
+# handful of messages at once is not a real scenario this project needs to
+# support; a bound this generous only ever rejects a genuinely malformed or
+# hostile call.
+MAX_QUARANTINE_MESSAGE_IDS = 100
+
 mcp = MCPServer("imports-mcp")
 
 
@@ -232,6 +242,8 @@ def quarantine(message_ids: list[str]) -> dict[str, Any]:
     """
     if not isinstance(message_ids, list) or not message_ids:
         raise ToolError("message_ids must be a non-empty list")
+    if len(message_ids) > MAX_QUARANTINE_MESSAGE_IDS:
+        raise ToolError(f"message_ids must not exceed {MAX_QUARANTINE_MESSAGE_IDS} entries")
     cleaned = [m.strip() for m in message_ids if isinstance(m, str) and m.strip()]
     if len(cleaned) != len(message_ids):
         # Every id must be a real, non-blank string - a caller-supplied

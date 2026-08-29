@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-from imports_mcp.server import quarantine
+from imports_mcp.server import MAX_QUARANTINE_MESSAGE_IDS, quarantine
 
 VALID_IDS = ["4oRBnPtCXgAqZniRhzLNmS", "hXayS6wnCgNnt6aFTvmOF6"]
 
@@ -28,6 +28,26 @@ VALID_IDS = ["4oRBnPtCXgAqZniRhzLNmS", "hXayS6wnCgNnt6aFTvmOF6"]
 def test_empty_list_is_rejected():
     with pytest.raises(ToolError):
         quarantine([])
+
+
+@patch("imports_mcp.server._quarantine")
+def test_batch_over_the_max_is_rejected_before_any_mailpit_call(mock_quarantine):
+    """Qodo, PR #67 finding #4: quarantine() now does one GET+PUT pair per
+    message, so an unbounded list means an unbounded number of live
+    round-trips, not just a large request body."""
+    with pytest.raises(ToolError):
+        quarantine([f"msg-{i}" for i in range(MAX_QUARANTINE_MESSAGE_IDS + 1)])
+    mock_quarantine.assert_not_called()
+
+
+@patch("imports_mcp.server._quarantine")
+def test_batch_at_exactly_the_max_is_accepted(mock_quarantine):
+    mock_quarantine.return_value = {"quarantined": True}
+    ids = [f"msg-{i}" for i in range(MAX_QUARANTINE_MESSAGE_IDS)]
+
+    quarantine(ids)
+
+    mock_quarantine.assert_called_once_with(ids)
 
 
 def test_non_list_is_rejected():
