@@ -35,6 +35,7 @@ truststore.inject_into_ssl()
 RDAP_TIMEOUT_SECONDS = 10
 CRTSH_TIMEOUT_SECONDS = 5
 CRTSH_CACHE_TTL_SECONDS = 3600
+CRTSH_CACHE_DB_TIMEOUT_SECONDS = 10
 MAX_RESPONSE_BYTES = 2048
 _MAX_FIELD_CHARS = 200
 
@@ -56,9 +57,26 @@ def _crtsh_db_execute(query: str, params: tuple[Any, ...] = ()) -> list[tuple[An
     connection alive between calls and a real cost (a leaked file handle)
     to getting the close step wrong. Always ensures the table exists first,
     so a fresh cache file (or a test's temp path) never needs a separate
-    migration step."""
-    conn = sqlite3.connect(_crtsh_cache_db_path())
+    migration step.
+
+    Never raises (Qodo, PR #60 finding #1) - the cache is a performance
+    optimization, not a correctness-critical store, the same "degrade
+    instead of failing outright" contract this whole module already holds
+    the RDAP/crt.sh network calls to. `imports-mcp` is a stateless-per-
+    request server (server.py), so it doesn't serialize calls itself;
+    concurrent requests hitting this cache can genuinely contend for
+    SQLite's write lock. WAL mode plus an explicit busy timeout make that
+    contention rare, but on the off chance it still happens, a locked
+    database degrades to "cache miss" (reads) or "write skipped" (writes)
+    - the caller just re-fetches from the network next time, exactly as
+    safe as a true cache miss - instead of raising out of domain_intel()
+    and taking down a mission's evidence gathering over what should only
+    ever be a speed optimization.
+    """
+    conn = None
     try:
+        conn = sqlite3.connect(_crtsh_cache_db_path(), timeout=CRTSH_CACHE_DB_TIMEOUT_SECONDS)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS crtsh_cache "
             "(domain TEXT PRIMARY KEY, cached_at REAL NOT NULL, result TEXT NOT NULL)"
@@ -67,8 +85,11 @@ def _crtsh_db_execute(query: str, params: tuple[Any, ...] = ()) -> list[tuple[An
         rows = cursor.fetchall()
         conn.commit()
         return rows
+    except sqlite3.Error:
+        return []
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _vcard_field(entity: dict[str, Any], field: str) -> str | None:

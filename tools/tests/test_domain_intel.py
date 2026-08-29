@@ -231,6 +231,25 @@ def test_crtsh_cache_entry_is_actually_persisted_to_the_sqlite_file(mock_get):
     assert stored_result["age_days"] is not None
 
 
+@patch("imports_mcp.domain_intel.sqlite3.connect")
+@patch("imports_mcp.domain_intel.requests.get")
+def test_locked_cache_database_degrades_instead_of_raising(mock_get, mock_connect):
+    """Qodo, PR #60 finding #1: imports-mcp is stateless per request
+    (server.py), so it never serialized calls into this cache - concurrent
+    requests can genuinely contend for SQLite's write lock. A lock timeout
+    must degrade the cache to a miss, the same "never raises" contract
+    every other source in this module already holds, not crash the whole
+    domain_intel() call over what's only meant to be a speed optimization."""
+    mock_connect.side_effect = sqlite3.OperationalError("database is locked")
+    mock_get.side_effect = [_mock_response(200, RDAP_SUCCESS), _mock_response(200, CRTSH_SUCCESS)]
+
+    result = domain_intel("locked-db.example")
+
+    assert result["cert"]["available"] is True
+    assert result["cert"]["age_days"] is not None
+    assert mock_get.call_count == 2, "a cache write failure must not stop the live lookup from happening"
+
+
 @patch("imports_mcp.domain_intel.requests.get")
 def test_crtsh_transient_failure_is_not_cached(mock_get):
     mock_get.side_effect = [
