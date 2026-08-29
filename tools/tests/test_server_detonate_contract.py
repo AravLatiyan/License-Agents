@@ -9,8 +9,9 @@ syntax here: detonate() itself already returns a structured
 raising, so a second validation layer in the wrapper would just duplicate
 that check.
 
-The regression tests at the end of this file (Qodo's PR #37 review, all 6
-findings) belong with test_detonate.py's own local-fixture-server suite by
+The regression tests at the end of this file (Qodo's PR #37 review — the
+original 6 findings, plus 5 more from its re-review after the DNS-pinning
+fix) belong with test_detonate.py's own local-fixture-server suite by
 subject, but that file lives on a separate stacked PR (#38, not yet
 merged) — kept here instead of forking a same-named file that would
 collide with it, and flagged in PLAN.md for whoever merges both to
@@ -20,7 +21,7 @@ consider consolidating.
 from __future__ import annotations
 
 import socket
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -157,14 +158,17 @@ def test_resolve_pinned_address_returns_pin_for_a_public_resolved_address(monkey
     assert family == socket.AF_INET
 
 
-@patch("imports_mcp.detonate.requests.get")
+@patch("imports_mcp.detonate._get_without_proxy_trust")
 @patch("imports_mcp.detonate._resolve_pinned_address")
 def test_detonate_pins_the_connection_during_the_real_request(mock_resolve, mock_get):
     """Wiring test: detonate() must actually activate the pin during the
-    real requests.get() call, not just have the primitive available
-    unused. 8.8.8.8 is a well-known public address, chosen only because
-    it's unambiguous - requests.get itself is mocked so no real
-    connection is attempted either way."""
+    real request, not just have the primitive available unused. 8.8.8.8
+    is a well-known public address, chosen only because it's unambiguous
+    - the request itself is mocked so no real connection is attempted
+    either way. Patches _get_without_proxy_trust (not requests.get)
+    since that's what detonate() actually calls now (Qodo finding,
+    "Proxies bypass DNS pinning") - requests.get is no longer called
+    directly."""
     mock_resolve.return_value = ("8.8.8.8", socket.AF_INET)
     seen: dict[str, str] = {}
 
@@ -208,3 +212,109 @@ def test_private_target_bypass_works_with_the_env_var_set():
     # network-layer error, not the private-target refusal, proves the
     # bypass was actually honored.
     assert "refused private/internal network target" not in (result.get("error") or "")
+
+
+# --- Qodo PR #37 re-review (after the DNS-pinning fix): 3 new findings ---
+
+
+def test_idna_hostname_canonicalizes_to_the_ascii_form_requests_uses():
+    """"IDNs bypass DNS pinning": _idna_hostname must produce exactly the
+    ASCII/punycode string Requests' own PreparedRequest.prepare_url
+    produces internally (host.encode('idna')) - any divergence between
+    the two would mean the pin key and the hostname actually resolved at
+    connection time don't match. 例え.テスト ("example.test" in
+    Japanese) is a standard IDN worked example, not a real domain."""
+    from imports_mcp.detonate import _idna_hostname
+
+    unicode_host = "例え.テスト"
+    expected = unicode_host.encode("idna").decode("ascii")
+
+    assert _idna_hostname(unicode_host) == expected
+    assert expected.isascii()
+    # Already-ASCII hosts pass through unchanged - Requests' own encoding
+    # is a no-op for them too, so the pin key can't shift for ordinary URLs.
+    assert _idna_hostname("example.com") == "example.com"
+
+
+@patch("imports_mcp.detonate._get_without_proxy_trust")
+@patch("imports_mcp.detonate._resolve_pinned_address")
+def test_detonate_pins_an_idn_host_despite_the_unicode_ascii_mismatch(mock_resolve, mock_get):
+    """"IDNs bypass DNS pinning": detonate() used to pin under the raw
+    Unicode hostname from urlparse, but Requests IDNA-encodes a non-ASCII
+    host before the real connection - so the pin key and the hostname
+    actually resolved at connection time diverged, and the real request
+    fell through to a second, unpinned lookup. This mocks
+    _get_without_proxy_trust to do what Requests itself really does
+    internally (IDNA-encode the host, then call socket.getaddrinfo on
+    that encoded form) and proves it still lands on the pinned address -
+    it would instead hit the *real* resolver (raising gaierror for this
+    non-existent test name) before the fix, since the pin's Unicode key
+    would never match."""
+    mock_resolve.return_value = ("8.8.8.8", socket.AF_INET)
+    seen: dict[str, str] = {}
+
+    def fake_get(*args, **kwargs):
+        idna_host = "例え.テスト".encode("idna").decode("ascii")
+        infos = socket.getaddrinfo(idna_host, 443)
+        seen["address"] = infos[0][4][0]
+        response = Mock()
+        response.status_code = 200
+        response.headers = {"Content-Type": "text/plain"}
+        response.iter_content = lambda chunk_size: iter([b"ok"])
+        response.encoding = "utf-8"
+        return response
+
+    mock_get.side_effect = fake_get
+
+    _detonate_module("http://例え.テスト/")
+
+    assert seen["address"] == "8.8.8.8"
+
+
+def test_invalid_form_port_is_reported_as_action_invalid_not_a_raise():
+    """"Invalid form ports raise": _normalize_origin reads parsed.port,
+    which raises ValueError for an out-of-range port like :99999 - after
+    the surrounding malformed-action guard had already exited normally
+    (urlparse itself doesn't validate the port eagerly). One hostile form
+    must not escape detonate()'s never-raise contract or abort analysis
+    of the page's other forms."""
+    from imports_mcp.detonate import _extract_forms
+
+    html = (
+        '<html><body>'
+        '<form method="POST" action="https://example.com:99999/collect">'
+        '<input type="password" name="p"></form>'
+        '<form method="POST" action="https://example.com/ok">'
+        '<input type="text" name="q"></form>'
+        '</body></html>'
+    )
+    forms = _extract_forms(html, "https://example.com/login")
+
+    assert len(forms) == 2
+    assert forms[0]["action_invalid"] is True
+    assert forms[0]["action_origin"] is None
+    assert forms[0]["cross_domain"] is None
+    # The second, well-formed form is still reported - one bad port
+    # doesn't abort the rest of the page's analysis.
+    assert forms[1].get("action_invalid") is None
+    assert forms[1]["action_origin"] == "https://example.com"
+
+
+def test_get_without_proxy_trust_disables_environment_proxy_trust():
+    """"Proxies bypass DNS pinning": Requests honors HTTP_PROXY/
+    HTTPS_PROXY/ALL_PROXY by default, letting a proxy resolve the target
+    independently of _pin_dns_resolution. _get_without_proxy_trust must
+    set trust_env=False on the Session it uses for the real request."""
+    from imports_mcp.detonate import _get_without_proxy_trust
+
+    response = Mock()
+    session = MagicMock()
+    session.get.return_value = response
+    session.__enter__.return_value = session
+
+    with patch("imports_mcp.detonate.requests.Session", return_value=session):
+        result = _get_without_proxy_trust("https://example.com/", timeout=5, stream=True)
+
+    assert session.trust_env is False
+    session.get.assert_called_once_with("https://example.com/", timeout=5, stream=True)
+    assert result is response

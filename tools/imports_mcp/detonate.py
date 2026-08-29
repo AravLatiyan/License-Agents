@@ -22,7 +22,14 @@ trusting a second, independent DNS lookup when `requests` connects — closes
 the DNS-rebinding/TOCTOU gap Qodo's PR #37 review found (finding #3). The
 test-only `allow_private_network_targets` bypass additionally requires the
 `IMPORTS_MCP_ALLOW_TEST_TARGETS` env var (finding #5) — the parameter alone
-can no longer reach a private target.
+can no longer reach a private target. Two follow-up gaps in that same pin,
+found on Qodo's re-review: the pin key is IDNA-canonicalized to match the
+ASCII/punycode form `requests` itself connects with (an IDN target's raw
+Unicode hostname would otherwise silently miss the pin — `_idna_hostname`);
+and the request is made through a disposable `Session` with `trust_env`
+disabled (`_get_without_proxy_trust`), since `requests` otherwise honors
+`HTTP_PROXY`/`HTTPS_PROXY` and lets a proxy resolve the target itself,
+bypassing the pin entirely.
 
 Also injects truststore at import time — same local TLS-inspection SSL
 issue documented in domain_intel.py / PLAN.md §6-§7. Every networked tool
@@ -216,6 +223,41 @@ def _pin_dns_resolution(hostname: str, address: str, family: int):
         _pin_state.pin = previous
 
 
+def _idna_hostname(hostname: str) -> str:
+    """Canonicalizes to the exact ASCII/punycode form Requests itself
+    connects with, so the pin key and the hostname `requests`/urllib3
+    actually resolves at connection time can never diverge. Requests'
+    own `PreparedRequest.prepare_url` (models.py) IDNA-encodes a
+    non-ASCII host before the real connection is made - a Unicode pin
+    key would silently miss that encoded form, falling through
+    `_pinning_getaddrinfo` to a second, unpinned resolution a
+    DNS-rebinding attacker could answer differently (Qodo finding, "IDNs
+    bypass DNS pinning"). `.encode('idna')` is a no-op for an
+    already-ASCII hostname, matching Requests' behavior exactly."""
+    try:
+        return hostname.encode("idna").decode("ascii")
+    except UnicodeError:
+        return hostname
+
+
+def _get_without_proxy_trust(url: str, **kwargs: Any) -> requests.Response:
+    """Requests honors `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` environment
+    variables by default (`Session.trust_env`), routing the connection
+    through a proxy that resolves the target itself - independently of
+    `_pin_dns_resolution`, since the local socket then only ever resolves
+    the *proxy* host. That silently reopens the DNS-rebinding gap pinning
+    exists to close (Qodo finding, "Proxies bypass DNS pinning"). A
+    disposable `Session` with `trust_env` disabled removes proxy/env
+    influence for this one call - this is exactly what `requests.get()`
+    already does internally (`requests.api.request` opens a `Session`,
+    makes one call, closes it), just with `trust_env` also turned off, so
+    no other behavior (streaming after the session closes, redirects,
+    timeouts) changes."""
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.get(url, **kwargs)
+
+
 def _describe_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
@@ -273,8 +315,21 @@ def _extract_forms(html_text: str, page_url: str) -> list[dict[str, Any]]:
             # usually do - one bad form's action must not abort every other
             # form on the page, so this is exactly the action_invalid path.
             parsed = None
+
         if parsed is not None and parsed.scheme and parsed.netloc:
-            action_origin = _normalize_origin(parsed)
+            try:
+                action_origin = _normalize_origin(parsed)
+            except ValueError:
+                # _normalize_origin reads parsed.port, which raises for an
+                # out-of-range or non-numeric port (e.g.
+                # https://example.com:99999/) - urlparse itself doesn't
+                # validate the port eagerly, so this surfaces only here,
+                # after the guard above already let the form through.
+                # Falls into the same action_invalid path as a malformed
+                # authority (Qodo finding, "Invalid form ports raise").
+                parsed = None
+
+        if parsed is not None and parsed.scheme and parsed.netloc:
             forms.append(
                 {
                     "action": action_url,
@@ -358,6 +413,8 @@ def detonate(
         try:
             parsed = urlparse(current_url)
             hostname = parsed.hostname
+            if hostname:
+                hostname = _idna_hostname(hostname)
         except ValueError as exc:
             # urlparse/`.hostname` raise for some malformed inputs (e.g. an
             # unbalanced "[" in a bracketed-IPv6-style authority) instead of
@@ -400,9 +457,9 @@ def detonate(
             get_kwargs = dict(allow_redirects=False, timeout=timeout_seconds, stream=True)
             if pinned is not None:
                 with _pin_dns_resolution(hostname or "", pinned[0], pinned[1]):
-                    response = requests.get(current_url, **get_kwargs)
+                    response = _get_without_proxy_trust(current_url, **get_kwargs)
             else:
-                response = requests.get(current_url, **get_kwargs)
+                response = _get_without_proxy_trust(current_url, **get_kwargs)
         except (requests.RequestException, ValueError) as exc:
             # requests builds Response.next internally even with
             # allow_redirects=False, which parses a malformed Location
