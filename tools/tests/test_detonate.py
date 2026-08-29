@@ -119,6 +119,24 @@ def test_refuses_loopback_private_targets_by_default(fixture_server):
     assert result["redirect_chain"] == []
 
 
+@patch("imports_mcp.detonate._resolve_pinned_address")
+def test_dns_resolution_failure_refuses_rather_than_falling_through_unpinned(mock_resolve):
+    """Qodo review, PR #81: _resolve_pinned_address() returning None (a
+    resolution failure, not a confirmed-private address) used to fall
+    through to an *unpinned* request - reopening the exact DNS-rebinding
+    gap this pinning mechanism exists to close. A resolver that answers
+    SERVFAIL/times out on this lookup specifically, then answers normally
+    with a private address on requests' own independent lookup, would
+    bypass the guard entirely. Must refuse instead."""
+    mock_resolve.return_value = None
+
+    result = detonate("http://example.invalid/start")
+
+    assert "could not resolve" in result["error"]
+    assert result["redirect_chain"] == []
+    mock_resolve.assert_called_once()
+
+
 def test_follows_redirect_chain_and_flags_cross_domain_password_form(fixture_server):
     result = detonate(_url(fixture_server, "/start"), allow_private_network_targets=True)
     assert len(result["redirect_chain"]) == 2

@@ -138,10 +138,15 @@ def _resolve_pinned_address(hostname: str) -> tuple[str, int] | None:
     """Resolves `hostname` exactly once and returns (address, socket
     family) to pin the actual connection to - the same address this
     function itself just validated as public. Returns None if DNS
-    resolution fails outright (the real connection attempt surfaces that
-    as a normal, already-handled network error). Raises
-    `_PrivateNetworkTarget` if *any* resolved address is private, refusing
-    before any connection is attempted.
+    resolution fails outright - the caller treats that as a refusal, not
+    a reason to fall through to an unpinned request (Qodo review, PR #81:
+    a resolver answering SERVFAIL/timing out on *this* lookup specifically,
+    then answering normally with a private address on requests' own
+    independent lookup, would otherwise bypass the guard entirely - the
+    exact rebinding gap this function exists to close, reopened for the
+    resolution-failure case). Raises `_PrivateNetworkTarget` if *any*
+    resolved address is private, refusing before any connection is
+    attempted.
 
     Rule 2880752 (SSRF guard): stdlib `ipaddress.is_private` covers
     loopback/RFC1918/link-local/reserved space for both IPv4 and IPv6 in
@@ -450,6 +455,25 @@ def detonate(
                             f"refused private/internal network target: "
                             f"{hostname} resolves to {exc.address}"
                         ),
+                    }
+                )
+            if pinned is None:
+                # _resolve_pinned_address() returning None (a resolution
+                # failure, not a confirmed-private address) used to fall
+                # through to an unpinned request below - reopening the
+                # exact DNS-rebinding gap this whole pinning mechanism
+                # exists to close (Qodo review): a resolver that answers
+                # SERVFAIL/times out on *this* lookup specifically, then
+                # answers normally with a private address on requests'
+                # own independent lookup, would bypass the guard entirely.
+                # Refuse instead - the real connection attempt below would
+                # have hit the same resolution failure anyway, so nothing
+                # legitimate is lost by refusing here first.
+                return _cap_response(
+                    {
+                        "url": start_url,
+                        "redirect_chain": redirect_chain,
+                        "error": f"could not resolve {hostname!r} to pin the connection",
                     }
                 )
 
