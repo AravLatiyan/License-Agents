@@ -21,6 +21,8 @@ OS store instead, which is the real fix — not disabling verification.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -33,14 +35,61 @@ truststore.inject_into_ssl()
 RDAP_TIMEOUT_SECONDS = 10
 CRTSH_TIMEOUT_SECONDS = 5
 CRTSH_CACHE_TTL_SECONDS = 3600
+CRTSH_CACHE_DB_TIMEOUT_SECONDS = 10
 MAX_RESPONSE_BYTES = 2048
 _MAX_FIELD_CHARS = 200
 
-# In-memory only — good enough for one Slice-2 mission run. T-045 upgrades
-# this to SQLite so it survives a restart; don't duplicate that here.
-# Value is (cached_at_epoch_seconds, result) so CRTSH_CACHE_TTL_SECONDS is
-# actually enforced instead of caching forever.
-_crtsh_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+# SQLite (T-045), not in-memory — a repeated mission that re-hits the same
+# domain now stays cached across a process restart, not just within one run.
+# Resolved at call time, not import time, so a test can override it via the
+# env var without re-importing the module - same pattern _smtp.py's
+# smtp_target() already uses for SMTP_HOST/PORT.
+_DEFAULT_CRTSH_CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), ".crtsh_cache.sqlite3")
+
+
+def _crtsh_cache_db_path() -> str:
+    return os.environ.get("CRTSH_CACHE_DB_PATH", "").strip() or _DEFAULT_CRTSH_CACHE_DB_PATH
+
+
+def _crtsh_db_execute(query: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """One connection per call - this tool runs one lookup at a time, not a
+    server holding a pool open, so there's no benefit to keeping a
+    connection alive between calls and a real cost (a leaked file handle)
+    to getting the close step wrong. Always ensures the table exists first,
+    so a fresh cache file (or a test's temp path) never needs a separate
+    migration step.
+
+    Never raises (Qodo, PR #60 finding #1) - the cache is a performance
+    optimization, not a correctness-critical store, the same "degrade
+    instead of failing outright" contract this whole module already holds
+    the RDAP/crt.sh network calls to. `imports-mcp` is a stateless-per-
+    request server (server.py), so it doesn't serialize calls itself;
+    concurrent requests hitting this cache can genuinely contend for
+    SQLite's write lock. WAL mode plus an explicit busy timeout make that
+    contention rare, but on the off chance it still happens, a locked
+    database degrades to "cache miss" (reads) or "write skipped" (writes)
+    - the caller just re-fetches from the network next time, exactly as
+    safe as a true cache miss - instead of raising out of domain_intel()
+    and taking down a mission's evidence gathering over what should only
+    ever be a speed optimization.
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(_crtsh_cache_db_path(), timeout=CRTSH_CACHE_DB_TIMEOUT_SECONDS)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS crtsh_cache "
+            "(domain TEXT PRIMARY KEY, cached_at REAL NOT NULL, result TEXT NOT NULL)"
+        )
+        cursor = conn.execute(query, params)
+        rows = cursor.fetchall()
+        conn.commit()
+        return rows
+    except sqlite3.Error:
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _vcard_field(entity: dict[str, Any], field: str) -> str | None:
@@ -132,14 +181,30 @@ def _parse_crtsh_date(value: str | None) -> datetime | None:
 
 
 def _crtsh_cache_get(domain: str) -> dict[str, Any] | None:
-    cached = _crtsh_cache.get(domain)
-    if cached is None:
+    rows = _crtsh_db_execute(
+        "SELECT cached_at, result FROM crtsh_cache WHERE domain = ?", (domain,)
+    )
+    if not rows:
         return None
-    cached_at, result = cached
+    cached_at, result_json = rows[0]
     if time.time() - cached_at >= CRTSH_CACHE_TTL_SECONDS:
-        del _crtsh_cache[domain]
+        _crtsh_db_execute("DELETE FROM crtsh_cache WHERE domain = ?", (domain,))
         return None
-    return result
+    return json.loads(result_json)
+
+
+def _crtsh_cache_set(domain: str, result: dict[str, Any]) -> None:
+    _crtsh_db_execute(
+        "INSERT INTO crtsh_cache (domain, cached_at, result) VALUES (?, ?, ?) "
+        "ON CONFLICT(domain) DO UPDATE SET cached_at = excluded.cached_at, result = excluded.result",
+        (domain, time.time(), json.dumps(result)),
+    )
+
+
+def _crtsh_cache_clear() -> None:
+    """Test-only reset - drops every cached entry regardless of TTL, same
+    role `.clear()` had on the old in-memory dict."""
+    _crtsh_db_execute("DELETE FROM crtsh_cache")
 
 
 def _crtsh_lookup(domain: str) -> dict[str, Any]:
@@ -170,7 +235,7 @@ def _crtsh_lookup(domain: str) -> dict[str, Any]:
 
     if not entries:
         result = {**empty, "available": True, "note": "no certificates logged for this domain"}
-        _crtsh_cache[domain] = (time.time(), result)
+        _crtsh_cache_set(domain, result)
         return result
 
     dates = [
@@ -190,7 +255,7 @@ def _crtsh_lookup(domain: str) -> dict[str, Any]:
             "note": None,
         }
 
-    _crtsh_cache[domain] = (time.time(), result)
+    _crtsh_cache_set(domain, result)
     return result
 
 
