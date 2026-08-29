@@ -290,6 +290,19 @@ export interface ApprovalRequiredEvent {
   gate_index: 1 | 2 | 3 | 4;
   gate_count: 4;
   action: ProposedAction;
+  /**
+   * The id of the tool call THIS gate is about (T-046, Qodo PR #85).
+   *
+   * `approval` below is the raw wire event, and one such event can carry
+   * several `tool_calls` — so a consumer resuming a decision cannot take
+   * `approval.tool_calls[0]`: for the second gate of a multi-call request
+   * that is the *first* call's id. Doing so would display one action while
+   * allowing or denying a different one, which is the exact failure this
+   * whole licence mechanism exists to prevent. The translator knows which
+   * call each gate belongs to, so it records it here rather than leaving
+   * every consumer to re-derive it and get it wrong.
+   */
+  tool_call_id: string;
   approval: ToolApprovalRequiredEvent;
 }
 
