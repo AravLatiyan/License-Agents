@@ -1,0 +1,29 @@
+From: "Priya Nair" <priya.nair@universal-imports.example>
+Reply-To: priya.nair@universal-imports.example
+Return-Path: <priya.nair@universal-imports.example>
+To: accounts@universal-imports.example
+Subject: Q3 vendor list - review before Friday
+Date: Mon, 24 Aug 2026 08:30:00 +0000
+Message-ID: <q3-vendor-review-4471@universal-imports.example>
+Authentication-Results: mx.universal-imports.example;
+    spf=pass smtp.mailfrom=universal-imports.example;
+    dkim=pass header.d=universal-imports.example;
+    dmarc=pass (p=reject) header.from=universal-imports.example
+Received: from mail.universal-imports.example (mail.universal-imports.example [10.20.30.5])
+    by mx.universal-imports.example with ESMTPS id 1f2e3d4c
+    for <accounts@universal-imports.example>; Mon, 24 Aug 2026 08:29:41 +0000
+Received: from priya-laptop.internal (priya-laptop.internal [10.20.30.101])
+    by mail.universal-imports.example; Mon, 24 Aug 2026 08:29:20 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+
+Hi team,
+
+Attached... actually never mind, I'll drop it in the shared drive instead:
+https://drive.internal.universal-imports.example/vendors/q3-list
+
+Can everyone review before Friday's call? No changes needed from finance,
+just a sanity check on the shipping column.
+
+Thanks,
+Priya
