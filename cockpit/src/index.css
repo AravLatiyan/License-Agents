@@ -18,40 +18,499 @@ body {
   margin-bottom: 24px;
 }
 
-.mission-view {
+/* Visually hidden but still reachable by assistive tech - standard pattern,
+   not `display: none`/`visibility: hidden` (those remove it from the
+   accessibility tree too). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Shared panel chrome (T-044) — every top-level section on the page uses
+   the same heading treatment and vertical rhythm. Consolidated from what
+   were five separate copies of the same two rules (one per panel, added
+   task by task) into one place each, so a future change can't apply to
+   four of five panels and miss the fifth the way `.evidence-lane__empty`'s
+   opacity drifted below (Qodo never had a reason to catch it - nothing
+   compared the five panels against each other). */
+.evidence-lanes,
+.detonation-panel,
+.verdict-panel,
+.approval-panel,
+.mission-view,
+.spoken-verdict {
+  margin: 16px 0;
+}
+
+.detonation-panel h2,
+.verdict-panel h2,
+.approval-panel h2,
+.mission-view h2,
+.spoken-verdict h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+/* Interactive affordance (T-044) — the two button-bearing panels
+   (ApprovalPanel, SpokenVerdict) had no hover/focus-visible feedback at
+   all, and disabled state used two different cursors (`not-allowed` vs
+   `default`) for the same meaning. One rule covers every button under
+   `.cockpit`, present and future, rather than repeating per panel. */
+.cockpit button {
+  cursor: pointer;
+}
+
+.cockpit button:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.cockpit button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.cockpit button:disabled {
+  cursor: not-allowed;
+}
+
+/* Mission view — the plan tree (T-051). One top-level <li> per §10 stage;
+   each stage's own children (evidence lanes, licence gates) are a nested
+   <ol> of the same node markup, one level indented. */
+
+.plan-tree {
   list-style: none;
   margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-node {
+  border-left: 2px solid color-mix(in srgb, currentColor 15%, transparent);
+  padding: 2px 0 2px 14px;
+}
+
+.plan-node__status {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  background: color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.plan-node__label {
+  font-weight: 600;
+}
+
+.plan-node__detail {
+  display: block;
+  margin: 2px 0 0 16px;
+  font-size: 0.9rem;
+  opacity: 0.75;
+}
+
+.plan-node__children {
+  list-style: none;
+  margin: 6px 0 2px 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* pending: dim throughout - nothing has happened for this node yet */
+.plan-node--pending {
+  opacity: 0.45;
+}
+
+/* active: the stage currently in progress - the "lighting up" beat (§17) */
+.plan-node--active {
+  border-left-color: orange;
+}
+.plan-node--active > .plan-node__status {
+  background: orange;
+}
+
+/* done: finished, stays visible so the tree reads as a history too */
+.plan-node--done {
+  border-left-color: color-mix(in srgb, seagreen 60%, transparent);
+}
+.plan-node--done > .plan-node__status {
+  background: seagreen;
+}
+
+/* denied: a gate a human rejected - deliberately not styled like "done",
+   §17's demo beat calls this out as the shot that proves the gate is real */
+.plan-node--denied {
+  border-left-color: crimson;
+}
+.plan-node--denied > .plan-node__status {
+  background: crimson;
+}
+.plan-node--denied > .plan-node__detail {
+  opacity: 1;
+  font-weight: 600;
+  color: crimson;
+}
+
+/* Evidence lanes (T-052) — the three subagents side by side, §17's
+   "three evidence lanes light up in parallel" beat. Same pending/active/
+   done language as the plan tree, reused via the shared status classes. */
+.evidence-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .evidence-lanes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.evidence-lane {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.evidence-lane__header h3 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.evidence-lane__empty {
+  margin: 0;
+  /* Matches every other panel's "waiting" placeholder opacity (0.45) -
+     was 0.6, the one outlier, unnoticed because nothing compared the
+     panels against each other (T-044). */
+  opacity: 0.45;
+  font-size: 0.9rem;
+}
+
+.evidence-lane__items {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.evidence-item {
+  font-size: 0.9rem;
+}
+
+.evidence-item__title {
+  margin: 0 0 4px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.evidence-item dt {
+  opacity: 0.6;
+  font-size: 0.75rem;
+  margin-top: 4px;
+}
+
+.evidence-item dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.evidence-lane--pending {
+  opacity: 0.45;
+}
+
+.evidence-lane--active {
+  border-color: orange;
+}
+
+.evidence-lane--done {
+  border-color: color-mix(in srgb, seagreen 60%, transparent);
+}
+
+/* Detonation panel (T-053) */
+.detonation-panel__empty {
+  opacity: 0.45;
+}
+
+.detonation-result--error .detonation-result__error {
+  color: crimson;
+  font-weight: 600;
+}
+
+.redirect-chain {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.9rem;
+}
+
+.redirect-chain__hop {
+  display: flex;
+  gap: 8px;
+}
+
+.redirect-chain__status {
+  opacity: 0.6;
+  min-width: 2.2em;
+}
+
+.redirect-chain__url {
+  word-break: break-all;
+}
+
+.redirect-chain__hop--final .redirect-chain__url {
+  font-weight: 600;
+}
+
+.detonation-forms {
+  list-style: none;
+  margin: 0 0 10px;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.mission-event {
+.detonation-form {
   border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   border-radius: 6px;
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
 }
 
-.mission-event__label {
+.detonation-form__action {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.detonation-form__note {
+  margin: 4px 0 0;
+  opacity: 0.75;
+}
+
+.detonation-form--dangerous {
+  border-color: crimson;
+}
+
+.detonation-form__warning {
+  margin: 4px 0 0;
+  color: crimson;
+  font-weight: 600;
+}
+
+.detonation-screenshot {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+  opacity: 0.75;
+}
+
+.detonation-result__summary {
+  font-size: 0.9rem;
+}
+
+/* Verdict panel (T-054) - the demo's plain-language judgment moment (§17,
+   1:25-1:50), the most visually prominent panel: bigger type than
+   everything else, color-coded by verdict. */
+.verdict-panel__empty {
+  opacity: 0.45;
+}
+
+.verdict {
+  border: 2px solid;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.verdict__label {
+  margin: 0 0 6px;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.verdict__summary {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.verdict--malicious {
+  border-color: crimson;
+}
+.verdict--malicious .verdict__label {
+  color: crimson;
+}
+
+.verdict--suspicious {
+  border-color: orange;
+}
+.verdict--suspicious .verdict__label {
+  /* plain `orange` text is ~1.97:1 against white - fails WCAG's 3:1 minimum
+     even for this large bold label (Qodo, PR #43 finding #1). #b45309
+     measures ~5:1 on white and ~4.2:1 on black, clearing the bar in both
+     the light and dark halves of this page's `color-scheme: light dark`. */
+  color: #b45309;
+}
+
+.verdict--legitimate {
+  border-color: seagreen;
+}
+.verdict--legitimate .verdict__label {
+  color: seagreen;
+}
+
+/* Approval panel (T-036) — LICENCE REQUIRED, §17 1:50-2:20. Four sequential
+   per-tool-call gates (§6, 2026-08-24), not one modal — each card mirrors
+   TrueForge's own native approval UI (literal JSON request) in this app's
+   styling. Presentation only: Allow/Deny render disabled, see the panel's
+   own header comment for why (§8's undecided translation layer). */
+.approval-gates {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-gate {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.approval-gate__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.approval-gate__index {
   font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   opacity: 0.6;
 }
 
-.mission-event__detail {
-  font-size: 0.95rem;
+.approval-gate__title {
+  font-weight: 600;
 }
 
-.mission-event--mission\.approval_required,
-.mission-event--mission\.approval_resolved {
-  border-color: color-mix(in srgb, orange 50%, transparent);
+.approval-gate__banner {
+  margin: 8px 0 4px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  /* plain `orange` text is ~1.97:1 against white - the same WCAG contrast
+     failure already fixed for the suspicious-verdict label (PR #43) with
+     #b45309, ~5:1/~4.2:1 on white/black (Qodo, PR #52 finding #1). */
+  color: #b45309;
 }
 
-.mission-event--mission\.verdict {
-  border-color: color-mix(in srgb, crimson 50%, transparent);
+.approval-gate__request {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.approval-gate__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-gate__actions button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  font: inherit;
+  opacity: 0.6;
+}
+
+.approval-gate__note {
+  margin: 0;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+
+.approval-gate__outcome {
+  margin: 4px 0 0;
+}
+
+.approval-gate__outcome--empty {
+  opacity: 0.45;
+}
+
+.approval-gate--pending {
+  opacity: 0.45;
+}
+
+.approval-gate--requested {
+  border-color: orange;
+}
+
+.approval-gate--allowed {
+  border-color: color-mix(in srgb, seagreen 60%, transparent);
+}
+
+.approval-gate--denied {
+  border-color: crimson;
+}
+.approval-gate--denied .approval-gate__outcome {
+  color: crimson;
+  font-weight: 600;
+}
+
+.approval-gate--executed {
+  border-color: seagreen;
+}
+
+/* Spoken verdict (T-043) — the demo's closing beat (§17, 2:40-3:00). */
+.spoken-verdict__empty {
+  opacity: 0.45;
+}
+
+.spoken-verdict__text {
+  font-size: 1.1rem;
+  font-style: italic;
+  margin: 0 0 10px;
+}
+
+.spoken-verdict button {
+  padding: 8px 18px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: transparent;
+  font: inherit;
+}
+
+.spoken-verdict button:disabled {
+  opacity: 0.6;
+}
+
+.spoken-verdict__unsupported {
+  opacity: 0.6;
+  font-size: 0.9rem;
 }

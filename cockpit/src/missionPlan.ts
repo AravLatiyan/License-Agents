@@ -1,4 +1,10 @@
-import type { EvidenceLane, MissionEvent } from "../../contracts/events";
+import type {
+  ApprovalStatus,
+  EvidenceLane,
+  MissionEvent,
+  ProposedActionName,
+  ToolApprovalRequiredEvent,
+} from "../../contracts/events";
 
 /**
  * Turns the flat MissionEvent stream into the plan tree §10's architecture
@@ -118,21 +124,123 @@ function stageStatus(stageIndex: number, currentIndex: number, missionDone: bool
   return "pending";
 }
 
-interface GateState {
-  action?: string;
-  resolved?: "allow" | "deny";
+function currentStageIndex(events: MissionEvent[]): number {
+  const seenStages = new Set(events.map(stageOf));
+  let index = -1;
+  STAGE_ORDER.forEach((stage, i) => {
+    if (seenStages.has(stage)) index = i;
+  });
+  return index;
+}
+
+export interface EvidenceLaneState {
+  lane: EvidenceLane;
+  label: string;
+  status: StageStatus;
+  items: Extract<MissionEvent, { type: "mission.evidence" }>[];
+}
+
+/**
+ * The three evidence lanes on their own, with full typed evidence items
+ * (not the plan tree's collapsed one-line join) - what T-052's dedicated
+ * lane panels render. Status derivation is shared with buildMissionPlan
+ * (both call this) so the tree and the lane panels can never disagree
+ * about whether a lane is pending/active/done.
+ */
+export function buildEvidenceLanes(events: MissionEvent[]): EvidenceLaneState[] {
+  const missionDone = events.some((e) => e.type === "mission.complete");
+  const currentIndex = currentStageIndex(events);
+  const evidenceStageIndex = STAGE_ORDER.indexOf("evidence");
+
+  const byLane = new Map<EvidenceLane, Extract<MissionEvent, { type: "mission.evidence" }>[]>();
+  for (const e of events) {
+    if (e.type === "mission.evidence") {
+      const list = byLane.get(e.lane) ?? [];
+      list.push(e);
+      byLane.set(e.lane, list);
+    }
+  }
+
+  return EVIDENCE_LANES.map((lane) => {
+    const items = byLane.get(lane) ?? [];
+    // Stage advancement/mission completion is checked first, not item
+    // count: a lane the stream moves past (or the mission finishes)
+    // without ever reporting is done - it isn't still "pending" just
+    // because it happens to be empty (Qodo, PR #36 finding #1). Only
+    // while evidence is still the current stage does an empty lane mean
+    // "hasn't reported yet" rather than "reported nothing."
+    const status: StageStatus =
+      currentIndex > evidenceStageIndex || missionDone ? "done" : items.length === 0 ? "pending" : "active";
+    return { lane, label: LANE_LABEL[lane], status, items };
+  });
+}
+
+export interface ApprovalGateState {
+  gateIndex: 1 | 2 | 3 | 4;
+  action?: ProposedActionName;
+  /** The literal TrueForge approval request, once `approval_required`
+   *  arrives - T-036's LICENCE REQUIRED panel shows this JSON verbatim,
+   *  the same "shows the literal request" behavior TrueForge's own native
+   *  approval UI has (CLAUDE.md), just in our styling. */
+  request?: ToolApprovalRequiredEvent;
+  resolved?: ApprovalStatus;
   reason?: string;
   resultSummary?: string;
   executed: boolean; // tracked separately from resultSummary - "" is a valid, real summary
 }
 
+/**
+ * The four licence gates on their own, one fixed slot per `gate_index`,
+ * populated by whichever of the three gate events actually arrived - not
+ * gated behind `approval_required` specifically, since a resumed or
+ * reconnected stream (T-056) can genuinely deliver `approval_resolved`/
+ * `action_executed` without this client ever having seen the matching
+ * request (Qodo, PR #32 finding #1). Shared by the plan tree's gate nodes
+ * and T-036's ApprovalPanel so the two can't disagree about a gate's state,
+ * same reasoning as buildEvidenceLanes above (T-052).
+ */
+export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] {
+  const gates = new Map<number, ApprovalGateState>();
+  const gateState = (gateIndex: 1 | 2 | 3 | 4): ApprovalGateState => {
+    const existing = gates.get(gateIndex);
+    if (existing) return existing;
+    const created: ApprovalGateState = { gateIndex, executed: false };
+    gates.set(gateIndex, created);
+    return created;
+  };
+  for (const e of events) {
+    if (e.type === "mission.approval_required") {
+      const g = gateState(e.gate_index);
+      g.action = e.action.action;
+      g.request = e.approval;
+      // A fresh request for a gate index that already carries a prior
+      // outcome (a retried tool call, same pattern as T-053's retried
+      // detonation) supersedes that outcome - without this, the terminal
+      // fields from the earlier attempt would outrank the new `request`
+      // in every consumer's status derivation and the retry would render
+      // as still denied/executed instead of newly requested (Qodo, PR #52
+      // finding #2).
+      g.resolved = undefined;
+      g.reason = undefined;
+      g.resultSummary = undefined;
+      g.executed = false;
+    } else if (e.type === "mission.approval_resolved") {
+      const g = gateState(e.gate_index);
+      g.resolved = e.status;
+      g.reason = e.reason;
+    } else if (e.type === "mission.action_executed") {
+      const g = gateState(e.gate_index);
+      g.action ??= e.action;
+      g.resultSummary = e.result_summary;
+      g.executed = true;
+    }
+  }
+  return GATE_INDICES.map((gateIndex) => gates.get(gateIndex) ?? { gateIndex, executed: false });
+}
+
 export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   const missionDone = events.some((e) => e.type === "mission.complete");
-  const seenStages = new Set(events.map(stageOf));
-  let currentIndex = -1;
-  STAGE_ORDER.forEach((stage, i) => {
-    if (seenStages.has(stage)) currentIndex = i;
-  });
+  const currentIndex = currentStageIndex(events);
   const indexOf = (stage: StageId) => STAGE_ORDER.indexOf(stage);
 
   // --- message -----------------------------------------------------------
@@ -146,41 +254,26 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     detail: messageEvent ? describeEvent(messageEvent) : null,
   };
 
-  // --- evidence: 3 fixed lanes, populated by whatever evidence arrived ---
-  const evidenceByLane = new Map<EvidenceLane, Extract<MissionEvent, { type: "mission.evidence" }>[]>();
-  for (const e of events) {
-    if (e.type === "mission.evidence") {
-      const list = evidenceByLane.get(e.lane) ?? [];
-      list.push(e);
-      evidenceByLane.set(e.lane, list);
-    }
-  }
-  const evidenceStageIndex = indexOf("evidence");
-  const laneChildren: PlanNode[] = EVIDENCE_LANES.map((lane) => {
-    const laneEvents = evidenceByLane.get(lane) ?? [];
-    const hasEvents = laneEvents.length > 0;
-    const status: StageStatus = !hasEvents
-      ? "pending"
-      : currentIndex > evidenceStageIndex || missionDone
-        ? "done"
-        : "active";
-    return {
-      id: `evidence:${lane}`,
-      label: LANE_LABEL[lane],
-      status,
-      detail: hasEvents ? laneEvents.map(describeEvent).join("; ") : null,
-    };
-  });
+  // --- evidence: collapsed from the same per-lane state buildEvidenceLanes
+  // exposes in full, so the tree and T-052's lane panels can't disagree ---
+  const laneChildren: PlanNode[] = buildEvidenceLanes(events).map(({ lane, label, status, items }) => ({
+    id: `evidence:${lane}`,
+    label,
+    status,
+    detail: items.length > 0 ? items.map(describeEvent).join("; ") : null,
+  }));
   const evidenceNode: PlanNode = {
     id: "evidence",
     label: STAGE_LABEL.evidence,
-    status: stageStatus(evidenceStageIndex, currentIndex, missionDone),
+    status: stageStatus(indexOf("evidence"), currentIndex, missionDone),
     detail: null,
     children: laneChildren,
   };
 
   // --- detonation / verdict: single events --------------------------------
-  const detonationEvent = events.find(
+  // findLast: a retried/re-emitted detonation is a later, more current
+  // result, not a duplicate to ignore (Qodo, PR #41 finding #1, DetonationPanel.tsx).
+  const detonationEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.detonation" }> => e.type === "mission.detonation",
   );
   const detonationNode: PlanNode = {
@@ -190,7 +283,9 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
     detail: detonationEvent ? describeEvent(detonationEvent) : null,
   };
 
-  const verdictEvent = events.find(
+  // findLast: a re-emitted verdict is the current judgment, not a
+  // duplicate (§7, same class as T-053's detonationEvent fix).
+  const verdictEvent = events.findLast(
     (e): e is Extract<MissionEvent, { type: "mission.verdict" }> => e.type === "mission.verdict",
   );
   const verdictNode: PlanNode = {
@@ -201,43 +296,11 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
   };
 
   // --- licence gates: 4 fixed slots, revealed as each gate is requested --
-  //
-  // Each of the three gate events is independently valid on its own per the
-  // shared contract/runtime validator - a resumed or reconnected stream
-  // (T-056) can genuinely deliver `approval_resolved`/`action_executed`
-  // without this client ever having seen the matching `approval_required`
-  // (Qodo, PR #32 finding #1). So state is built from whichever events
-  // arrived, not gated behind `approval_required` specifically - both
-  // `approval_required` and `action_executed` carry the action name, either
-  // one is enough to label the gate.
-  const gates = new Map<number, GateState>();
-  const gateState = (gateIndex: number): GateState => {
-    const existing = gates.get(gateIndex);
-    if (existing) return existing;
-    const created: GateState = { executed: false };
-    gates.set(gateIndex, created);
-    return created;
-  };
-  for (const e of events) {
-    if (e.type === "mission.approval_required") {
-      gateState(e.gate_index).action = e.action.action;
-    } else if (e.type === "mission.approval_resolved") {
-      const g = gateState(e.gate_index);
-      g.resolved = e.status;
-      g.reason = e.reason;
-    } else if (e.type === "mission.action_executed") {
-      const g = gateState(e.gate_index);
-      g.action ??= e.action;
-      g.resultSummary = e.result_summary;
-      g.executed = true;
-    }
-  }
-  const gateChildren: PlanNode[] = GATE_INDICES.map((gateIndex) => {
-    const g = gates.get(gateIndex);
-    const label = g?.action ? `Gate ${gateIndex} — ${g.action}` : `Gate ${gateIndex}`;
-    if (!g) {
-      return { id: `gate:${gateIndex}`, label, status: "pending", detail: null };
-    }
+  // State comes from the shared buildApprovalGates (above) so this tree and
+  // T-036's ApprovalPanel can't disagree about a gate's status.
+  const gateChildren: PlanNode[] = buildApprovalGates(events).map((g) => {
+    const gateIndex = g.gateIndex;
+    const label = g.action ? `Gate ${gateIndex} — ${g.action}` : `Gate ${gateIndex}`;
     // "" is a genuine, valid result_summary (Qodo finding #2) - `executed`
     // tracks whether the event happened at all, not the text it carried.
     // `reason` is the human's stated reason for the allow/deny decision -
@@ -254,9 +317,10 @@ export function buildMissionPlan(events: MissionEvent[]): PlanNode[] {
       return { id: `gate:${gateIndex}`, label, status: "active", detail: withReason("Allowed — executing…") };
     }
     if (!g.action) {
-      // Resolved (somehow) with no action ever observed - genuinely unusual,
-      // but every field here is independently optional per the contract, so
-      // render what's known rather than assume a shape that isn't there.
+      // No `approval_required` observed yet (or resolved with no action ever
+      // observed, genuinely unusual) - every field here is independently
+      // optional per the contract, so render what's known rather than
+      // assume a shape that isn't there.
       return { id: `gate:${gateIndex}`, label, status: "pending", detail: null };
     }
     return {

@@ -153,3 +153,38 @@ Reproduced twice.
 through to the Windows `node.exe` via interop) and run TrueForge from there. Confirmed working:
 the server started clean under WSL2, returned HTTP 200, and `harness/agent.json` was POSTed to
 its live `/api/v1/agents` and accepted. See PLAN.md §7/§8 for the full writeup.
+
+## Error paths (T-041)
+
+Four named failure modes, each verified individually rather than assumed to need new code:
+
+- **Redirect loop** — `detonate.js`'s existing `MAX_REDIRECT_HOPS` cap already terminates a
+  genuine A↔B loop, not just a long chain of distinct URLs, but had no direct regression test
+  proving it. Added one (`detonate.test.js`, "redirect loop terminates via the hop cap instead
+  of hanging") — confirms the chain stops at exactly 10 recorded hops with the documented
+  `redirect chain exceeded N hops` error, not an unbounded chain or a hang.
+- **MCP times out** — mostly already handled at the tool-implementation level, verified by
+  reading every module in `tools/imports_mcp`: RDAP, crt.sh, URLhaus, and both SMTP *sends*
+  (`notify_impersonated`, `file_abuse_report`) each carry their own explicit timeout;
+  `detonate.js` has its own (`REQUEST_TIMEOUT_MS`, `AbortSignal.timeout`). **One real gap found,
+  not fixed here — `tools/` is O2's folder:** `_smtp.py`'s `resolve_range_target()` calls
+  `socket.getaddrinfo(host, None)` (used by both SMTP tools, `file_abuse_report` most directly
+  since its host comes from a third-party RDAP response) with no timeout at all, *before* the
+  SMTP connection's own `SMTP_TIMEOUT_SECONDS` ever applies — a stalled resolver can hang the
+  call indefinitely, not just up to the documented bound. Logged in PLAN.md §7 for O2, not
+  patched here — out of scope for a harness-folder takeover to fix a `tools/` file, and O2 has
+  live work in this same folder this session (PR #37/#38, T-026).
+- **Sandbox dies** — not ours to handle. CLAUDE.md's own "don't rebuild what the harness already
+  does" list names sandbox lifecycle explicitly: "the agent requests a sandbox; the harness spins
+  it up and tears it down." Building recovery logic for a sandbox crash would be rebuilding
+  TrueForge's own job, the same class of mistake T-025 was caught making. No code written for
+  this sub-item, deliberately.
+- **Model returns garbage** — the one sub-item that's genuinely a prompt gap: every tool already
+  degrades to a structured `error` or `available: false` + `note` shape instead of raising
+  (established pattern across all of `tools/`), but `agent.json`'s `instructions` never told the
+  model what to do with that field once it arrived — nothing stopped a subagent from silently
+  dropping a failed lookup or the lead writing a verdict as if a gap were a clean result. Added
+  one instruction: report a tool's own error/unavailable field verbatim, same as any other field,
+  and say so plainly in the verdict if evidence is incomplete rather than treating the gap as
+  checked-and-clean. **Written, not yet runtime-verified** — same caveat as T-023/T-024 above, no
+  local TrueForge instance this session to observe the actual effect on a real turn.
