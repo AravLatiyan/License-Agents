@@ -2,8 +2,18 @@
 //
 // Shared contract between the harness (O1), tools (O2), and Cockpit (O3).
 // Layer 1: TrueForge's wire-level approval/session schema, confirmed live
-// in T-002 (PLAN.md §6). Layer 2: MissionEvent, one variant per §10
-// architecture stage, which is what T-050/T-036 bind to.
+// in T-002 (PLAN.md §6) and re-verified field-by-field against a running
+// server's own openapi.json in T-037 (2026-08-29). Layer 2: MissionEvent,
+// one variant per §10 architecture stage, which is what T-050/T-036 bind to.
+//
+// The two layers are NOT the same vocabulary and never map one-to-one.
+// TrueForge's turn stream is a closed union of 12 generic event types
+// (turn.created/done, thread.created/done, model.message[.delta],
+// tool.response, tool.approval_required, tool.response_required,
+// mcp.initialize, mcp.auth_required, sandbox.created) with a `type`
+// discriminator — there is no extension point for an agent to emit a
+// `mission.*` event of its own. `mission.*` is therefore always produced by
+// translating the raw stream on our side, never by the agent (T-037).
 //
 // MAINTENANCE (Qodo finding #6, T-016 remediation, 2026-08-26):
 // - Shape source of truth is the actual producer code — harness/detonate.js
@@ -25,10 +35,44 @@
 // 1. TrueForge wire-level primitives (T-002, PLAN.md §6)
 // ---------------------------------------------------------------------------
 
-export interface ToolCallRequest {
+/**
+ * A tool call awaiting a decision, exactly as `tool.approval_required`
+ * carries it (TrueForge schema `ToolCallRef`, both fields required).
+ *
+ * CORRECTED T-037, 2026-08-29. This was previously declared as a
+ * `ToolCallRequest` with `tool_name` and an `arguments` object — a shape
+ * TrueForge has never emitted. `ToolCallRequest` is not a schema name
+ * TrueForge defines at all; the drift was written from PLAN.md prose rather
+ * than the producer, the same class of bug Qodo caught once already on
+ * `DomainIntel` (§8, 2026-08-27), and the file's own MAINTENANCE note
+ * above is the rule it broke.
+ *
+ * The approval event deliberately does NOT repeat the name or the
+ * arguments. To recover them, follow `source_event_id` back to the
+ * `model.message` that requested the call and match `id` against its
+ * `tool_calls[].id` — see ModelMessageToolCall. A consumer that needs the
+ * human-readable request should read `ApprovalRequiredEvent.action`
+ * instead, which is exactly that resolved pair.
+ */
+export interface ToolCallRef {
   id: string;
-  tool_name: string;
-  arguments: Record<string, unknown>;
+  /** Event id of the `model.message` that requested this tool call. */
+  source_event_id: string;
+}
+
+/**
+ * One tool call as it appears on a `model.message` event — the only place
+ * the name and arguments are actually published.
+ *
+ * `arguments` is a **JSON-encoded string**, not an object: TrueForge passes
+ * the model's raw function-call arguments through verbatim. Parsing it can
+ * fail on a malformed model output, so a consumer parses defensively rather
+ * than assuming it is well-formed.
+ */
+export interface ModelMessageToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
 }
 
 /** SSE from POST /sessions/{id}/turns when a gated tool call needs a decision. */
@@ -37,7 +81,7 @@ export interface ToolApprovalRequiredEvent {
   id: string;
   created_at: string; // ISO 8601
   thread_id: string;
-  tool_calls: ToolCallRequest[];
+  tool_calls: ToolCallRef[];
 }
 
 export type ApprovalStatus = "allow" | "deny";
@@ -193,8 +237,22 @@ export interface ProposedAction {
   arguments: Record<string, unknown>;
 }
 
-/** T-036's LICENCE REQUIRED panel binds to this. Carries the real
- *  ToolApprovalRequiredEvent inline. Four sequential gates (§6, 2026-08-24). */
+/**
+ * T-036's LICENCE REQUIRED panel binds to this. Four sequential gates
+ * (§6, 2026-08-24).
+ *
+ * `action` is the human-readable request — the resolved tool name and its
+ * decoded arguments — and is what a panel should display. `approval` is the
+ * raw wire event kept verbatim for provenance; since T-037 corrected it to
+ * the real schema, its `tool_calls` carry only `{id, source_event_id}` and
+ * are NOT displayable on their own.
+ *
+ * `gate_index`/`gate_count` are our semantics, not TrueForge's: nothing in
+ * the turn stream numbers approvals. A translator assigns them by arrival
+ * order. `gate_count: 4` therefore encodes §10/§17's four-gate design, and
+ * a run that proposes a different number of actions does not fit this shape
+ * — deliberately left as-is pending a decision, not silently widened (T-037).
+ */
 export interface ApprovalRequiredEvent {
   type: "mission.approval_required";
   mission_id: string;

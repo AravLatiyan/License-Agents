@@ -145,8 +145,11 @@ function checkToolApprovalRequired(v: unknown, index: number): void {
   }
   if (!isArr(v.tool_calls)) fail(index, "approval.tool_calls: expected array");
   for (const call of v.tool_calls) {
-    if (!isRecord(call) || !isStr(call.id) || !isStr(call.tool_name) || !isRecord(call.arguments)) {
-      fail(index, "approval.tool_calls: expected {id, tool_name, arguments}");
+    // ToolCallRef, corrected in T-037: the wire event carries a reference to
+    // the model.message that requested the call, never the name or the
+    // arguments. Those come from ApprovalRequiredEvent.action instead.
+    if (!isRecord(call) || !isStr(call.id) || !isStr(call.source_event_id)) {
+      fail(index, "approval.tool_calls: expected {id, source_event_id}");
     }
   }
 }

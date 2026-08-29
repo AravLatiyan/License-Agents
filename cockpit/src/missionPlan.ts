@@ -179,10 +179,19 @@ export interface ApprovalGateState {
   gateIndex: 1 | 2 | 3 | 4;
   action?: ProposedActionName;
   /** The literal TrueForge approval request, once `approval_required`
-   *  arrives - T-036's LICENCE REQUIRED panel shows this JSON verbatim,
-   *  the same "shows the literal request" behavior TrueForge's own native
-   *  approval UI has (CLAUDE.md), just in our styling. */
+   *  arrives - kept for provenance (event id, timestamp, thread, and the
+   *  tool-call ids awaiting a decision).
+   *
+   *  T-037: this is NO LONGER what the panel displays. The real wire event's
+   *  `tool_calls` are `ToolCallRef` - `{id, source_event_id}` only - so
+   *  rendering them verbatim would show a judge two opaque ids instead of
+   *  the request. The displayable request is `requestArguments` below,
+   *  paired with `action`. */
   request?: ToolApprovalRequiredEvent;
+  /** The decoded arguments of the gated call, from
+   *  `ApprovalRequiredEvent.action.arguments` - the half of "shows the
+   *  literal request" (CLAUDE.md) that survives T-037's correction. */
+  requestArguments?: Record<string, unknown>;
   resolved?: ApprovalStatus;
   reason?: string;
   resultSummary?: string;
@@ -212,6 +221,7 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
     if (e.type === "mission.approval_required") {
       const g = gateState(e.gate_index);
       g.action = e.action.action;
+      g.requestArguments = e.action.arguments;
       g.request = e.approval;
       // A fresh request for a gate index that already carries a prior
       // outcome (a retried tool call, same pattern as T-053's retried
