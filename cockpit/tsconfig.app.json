@@ -27,5 +27,12 @@
   // ../../contracts is the shared, checked-in contract (CLAUDE.md: Cockpit
   // imports types from there, never redeclares them) - included explicitly
   // since it lives outside src/.
-  "include": ["src", "../contracts/events.ts", "../contracts/fixtures/mission-happy-path.json"]
+  "include": ["src", "../contracts/events.ts", "../contracts/fixtures/mission-happy-path.json"],
+  // Test files are excluded from the *app* build on purpose (T-039): they
+  // import `node:test`/`node:assert`, which the browser bundle has no types
+  // for and no business shipping. They are type-stripped and executed by
+  // `npm test` instead, the same arrangement harness/ already uses. Adding
+  // @types/node to the app just to satisfy files the app never loads would
+  // widen the browser build's type surface for nothing.
+  "exclude": ["src/**/*.test.ts"]
 }
