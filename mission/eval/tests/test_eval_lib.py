@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -275,6 +275,68 @@ def test_turn_submission_http_error_raises_trueforge_error(mock_urlopen):
         run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
 
 
+@patch("eval_lib.urllib.request.urlopen")
+def test_turn_submission_timeout_raises_trueforge_error_not_escapes(mock_urlopen):
+    # A raw TimeoutError (e.g. the connect itself times out) is not a
+    # subclass of URLError/HTTPError - must still be wrapped, never allowed
+    # to escape uncaught (Qodo, PR #76, "Stream timeouts abort evaluation").
+    mock_urlopen.side_effect = TimeoutError("timed out")
+
+    with pytest.raises(TrueForgeError, match="timed out"):
+        run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_turn_submission_connection_error_raises_trueforge_error(mock_urlopen):
+    mock_urlopen.side_effect = ConnectionResetError("connection reset by peer")
+
+    with pytest.raises(TrueForgeError, match="reset"):
+        run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
+
+
+class _TimeoutMidStreamResponse(_FakeResponse):
+    """A response that starts iterating normally, then raises TimeoutError
+    partway through - simulating a slow/stalled SSE read after the initial
+    connection succeeded (the class of failure HTTPError/URLError alone
+    never catches, since urlopen() itself already returned)."""
+
+    def __iter__(self):
+        def _lines():
+            yield from self._lines
+            raise TimeoutError("read timed out mid-stream")
+
+        return _lines()
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_timeout_while_iterating_an_open_stream_raises_trueforge_error(mock_urlopen):
+    lines = _sse_lines(_model_message("msg-1", "quarantine", "call-1"))  # no terminal event yet
+    mock_urlopen.return_value = _TimeoutMidStreamResponse(lines=lines)
+
+    with pytest.raises(TrueForgeError, match="timed out"):
+        run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_stream_ending_without_a_terminal_event_raises_trueforge_error(mock_urlopen):
+    # EOF with only a model.message seen - no tool.approval_required, no
+    # turn.done/mission.complete. Must be a failure, not a "negative"
+    # (Qodo, PR #76, "Truncated streams become negatives").
+    lines = _sse_lines(_model_message("msg-1", "domain_intel", "call-1"))
+    mock_urlopen.return_value = _FakeResponse(lines=lines)
+
+    with pytest.raises(TrueForgeError, match="ended without"):
+        run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_completely_empty_stream_raises_trueforge_error(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=[])
+
+    with pytest.raises(TrueForgeError, match="ended without"):
+        run_turn_and_observe("sess-1", "raw email", GATED_TOOLS)
+
+
 # ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
@@ -315,6 +377,14 @@ def test_create_session_raises_on_non_json_response(mock_urlopen):
         create_session("universal-imports")
 
 
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_raises_trueforge_error_on_timeout(mock_urlopen):
+    mock_urlopen.side_effect = TimeoutError("timed out")
+
+    with pytest.raises(TrueForgeError, match="timed out"):
+        create_session("universal-imports")
+
+
 # ---------------------------------------------------------------------------
 # evaluate_fixture - execution failure handling, never coerced to negative
 # ---------------------------------------------------------------------------
@@ -326,8 +396,13 @@ def _fixture(name="f.eml", label="phish", raw="From: a@example.com\n\nhi"):
     return Fixture(name=name, label=label, raw_email=raw)
 
 
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
 @patch("eval_lib.create_session")
-def test_execution_failure_is_reported_not_coerced_to_negative(mock_create_session):
+def test_execution_failure_is_reported_not_coerced_to_negative(
+    mock_create_session, mock_write, mock_delete
+):
+    mock_write.return_value = "eval-abc123.eml"
     mock_create_session.side_effect = TrueForgeError("HTTP 422 from ...: provider not configured")
 
     result = evaluate_fixture(
@@ -339,11 +414,16 @@ def test_execution_failure_is_reported_not_coerced_to_negative(mock_create_sessi
     assert "422" in result.error
 
 
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
 @patch("eval_lib.run_turn_and_observe")
 @patch("eval_lib.create_session")
-def test_successful_evaluation_reports_predicted_positive(mock_create_session, mock_run_turn):
+def test_successful_evaluation_reports_predicted_positive(
+    mock_create_session, mock_run_turn, mock_write, mock_delete
+):
     from eval_lib import TurnObservation
 
+    mock_write.return_value = "eval-abc123.eml"
     mock_create_session.return_value = "sess-1"
     mock_run_turn.return_value = TurnObservation(gate_fired=True, resolved_gated_tools=["quarantine"])
 
@@ -356,13 +436,105 @@ def test_successful_evaluation_reports_predicted_positive(mock_create_session, m
     assert result.resolved_gated_tools == ["quarantine"]
 
 
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.run_turn_and_observe")
+@patch("eval_lib.create_session")
+def test_evaluate_fixture_writes_the_raw_email_and_references_it_in_the_turn_message(
+    mock_create_session, mock_run_turn, mock_write, mock_delete
+):
+    from eval_lib import TurnObservation
+
+    mock_write.return_value = "eval-abc123.eml"
+    mock_create_session.return_value = "sess-1"
+    mock_run_turn.return_value = TurnObservation(gate_fired=False)
+
+    evaluate_fixture(
+        _fixture(label="ham", raw="From: b@example.com\n\nham body"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    mock_write.assert_called_once_with("From: b@example.com\n\nham body")
+    turn_message = mock_run_turn.call_args[0][1]
+    assert "eval-abc123.eml" in turn_message
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.create_session")
+def test_evaluate_fixture_deletes_the_temp_fixture_even_when_the_turn_fails(
+    mock_create_session, mock_write, mock_delete
+):
+    mock_write.return_value = "eval-abc123.eml"
+    mock_create_session.side_effect = TrueForgeError("boom")
+
+    evaluate_fixture(_fixture(label="phish"), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    mock_delete.assert_called_once_with("eval-abc123.eml")
+
+
+# ---------------------------------------------------------------------------
+# Fixture delivery via tools/fixtures/ - write_temp_fixture, delete_temp_fixture
+# ---------------------------------------------------------------------------
+
+
+def test_write_temp_fixture_creates_a_readable_file_and_returns_its_name(tmp_path):
+    from eval_lib import write_temp_fixture
+
+    name = write_temp_fixture("From: a@example.com\n\nhi", fixtures_dir=tmp_path)
+
+    assert name.endswith(".eml")
+    assert (tmp_path / name).read_text(encoding="utf-8") == "From: a@example.com\n\nhi"
+
+
+def test_write_temp_fixture_names_are_unique_across_calls(tmp_path):
+    from eval_lib import write_temp_fixture
+
+    first = write_temp_fixture("a", fixtures_dir=tmp_path)
+    second = write_temp_fixture("b", fixtures_dir=tmp_path)
+
+    assert first != second
+
+
+def test_delete_temp_fixture_removes_the_file(tmp_path):
+    from eval_lib import delete_temp_fixture, write_temp_fixture
+
+    name = write_temp_fixture("hi", fixtures_dir=tmp_path)
+    assert (tmp_path / name).exists()
+
+    delete_temp_fixture(name, fixtures_dir=tmp_path)
+
+    assert not (tmp_path / name).exists()
+
+
+def test_delete_temp_fixture_is_safe_if_the_file_is_already_gone(tmp_path):
+    from eval_lib import delete_temp_fixture
+
+    delete_temp_fixture("never-existed.eml", fixtures_dir=tmp_path)  # must not raise
+
+
+def test_fixture_turn_message_names_the_exact_filename():
+    from eval_lib import fixture_turn_message
+
+    message = fixture_turn_message("eval-abc123.eml")
+
+    assert "eval-abc123.eml" in message
+    assert "parse_message" in message
+
+
 # ---------------------------------------------------------------------------
 # Event isolation between fixtures
 # ---------------------------------------------------------------------------
 
 
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
 @patch("eval_lib.urllib.request.urlopen")
-def test_one_fixtures_events_cannot_contaminate_anothers_result(mock_urlopen):
+def test_one_fixtures_events_cannot_contaminate_anothers_result(
+    mock_urlopen, mock_write, mock_delete
+):
+    mock_write.side_effect = ["eval-first.eml", "eval-second.eml"]
     positive_lines = _sse_lines(
         _model_message("msg-1", "quarantine", "call-1"),
         _approval_required([("call-1", "msg-1")]),
@@ -394,6 +566,7 @@ def test_one_fixtures_events_cannot_contaminate_anothers_result(mock_urlopen):
     assert first.predicted_positive is True
     assert second.predicted_positive is False
     assert mock_urlopen.call_count == 4  # two sessions, two turns - never reused
+    assert mock_delete.call_args_list == [call("eval-first.eml"), call("eval-second.eml")]
 
 
 # ---------------------------------------------------------------------------

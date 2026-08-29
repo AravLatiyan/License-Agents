@@ -75,6 +75,25 @@ error, non-2xx response, malformed session/turn creation, the live
 model-provider being unconfigured) — a failure is never silently folded
 into "negative"; see FixtureResult.error and Report.failed below.
 
+FIXTURE DELIVERY — via tools/fixtures/, matching parse_message's real contract
+-------------------------------------------------------------------------------
+The real agent's own prompt (harness/agent.json) requires it to call
+`parse_message(fixture)` before anything else, and that tool
+(tools/imports_mcp/server.py's `_resolve_fixture`) only accepts a bare
+filename already present in `tools/fixtures/` — not arbitrary email content
+(Qodo, PR #76 review, "Eval emails cannot be parsed": submitting raw RFC822
+text as the turn's message would leave the model unable to resolve any
+fixture, either failing the call outright or silently analyzing one of
+Slice 1's three unrelated hardcoded fixtures instead — invalidating the
+measured result either way). Each fixture is written into `tools/fixtures/`
+under a fresh UUID-suffixed name immediately before its turn
+(`write_temp_fixture`) and deleted again in a `finally` right after
+(`delete_temp_fixture`), success or failure, never left behind — the turn's
+own message then names that exact file (`fixture_turn_message`). This is a
+cross-folder *runtime* write, not a source change — `tools/imports_mcp/`
+itself is untouched — but it touches O2's fixture directory, flagged here
+per CLAUDE.md's cross-folder heads-up convention.
+
 UNVERIFIED WIRE ASSUMPTIONS — isolated, flagged, fix here first
 -------------------------------------------------------------------
 Two request bodies are genuinely undocumented anywhere in this repository
@@ -91,10 +110,12 @@ broader rewrite.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -103,6 +124,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_JSON_PATH = REPO_ROOT / "harness" / "agent.json"
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 FIXTURE_LABELS = ("phish", "ham")
+
+# The real agent's own prompt (harness/agent.json) requires it to call
+# parse_message(fixture) before anything else, and that tool only accepts a
+# bare filename already present in this exact directory (tools/imports_mcp/
+# server.py's _resolve_fixture whitelist) - not arbitrary content (Qodo, PR
+# #76 review, "Eval emails cannot be parsed"). Each fixture is written here
+# under a unique name immediately before its turn and deleted again in a
+# `finally` right after - never left behind, same seed-then-delete pattern
+# T-022's own live Mailpit test already uses (PR #72).
+TOOLS_FIXTURES_DIR = REPO_ROOT / "tools" / "fixtures"
 
 DEFAULT_TRUEFORGE_URL = "http://localhost:8790"
 TRUEFORGE_TIMEOUT_SECONDS = 60.0  # a real multi-tool-call turn can take a while
@@ -113,10 +144,35 @@ TRUEFORGE_TIMEOUT_SECONDS = 60.0  # a real multi-tool-call turn can take a while
 # means this fixture never proposed a gated action.
 _TURN_FINISHED_EVENT_TYPES = ("turn.done", "mission.complete")
 
+# Transport-layer failures that mean "this fixture's evaluation could not be
+# completed," never "the model quietly declined to act." HTTPError/URLError
+# alone missed a real class of failure (Qodo, PR #76, "Stream timeouts abort
+# evaluation"): a timeout or dropped connection *while iterating* an
+# already-open SSE response raises a bare TimeoutError/ConnectionError/
+# http.client.HTTPException, none of which subclass URLError - uncaught,
+# any of these would escape evaluate_fixture entirely and abort the whole
+# 40-fixture loop instead of recording one failed fixture.
+_TRANSPORT_ERRORS = (
+    urllib.error.HTTPError,
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    http.client.HTTPException,
+)
+
 
 class TrueForgeError(Exception):
     """A fixture's evaluation could not be completed. Always surfaced as a
     FixtureResult.error, never silently treated as a negative prediction."""
+
+
+def _wrap_transport_error(exc: BaseException, context: str) -> TrueForgeError:
+    if isinstance(exc, urllib.error.HTTPError):
+        body_text = exc.read().decode("utf-8", "replace")[:500]
+        return TrueForgeError(f"HTTP {exc.code} {context}: {body_text}")
+    if isinstance(exc, urllib.error.URLError):
+        return TrueForgeError(f"could not reach the server {context}: {exc.reason}")
+    return TrueForgeError(f"transport error {context}: {exc!r}")
 
 
 def trueforge_url() -> str:
@@ -186,6 +242,33 @@ def load_fixtures(fixtures_dir: Path = FIXTURES_DIR) -> list[Fixture]:
     return fixtures
 
 
+def write_temp_fixture(raw_email: str, fixtures_dir: Path = TOOLS_FIXTURES_DIR) -> str:
+    """Writes raw_email into tools/fixtures/ under a fresh, collision-proof
+    name so the real agent's mandatory parse_message(fixture) call has a
+    real, exact filename to resolve - the fixture under test, never one of
+    Slice 1's three unrelated hardcoded fixtures. Caller deletes it with
+    delete_temp_fixture() once the turn finishes, success or failure."""
+    name = f"eval-{uuid.uuid4().hex[:16]}.eml"
+    (fixtures_dir / name).write_text(raw_email, encoding="utf-8")
+    return name
+
+
+def delete_temp_fixture(name: str, fixtures_dir: Path = TOOLS_FIXTURES_DIR) -> None:
+    (fixtures_dir / name).unlink(missing_ok=True)
+
+
+def fixture_turn_message(temp_fixture_name: str) -> str:
+    """The turn's initial user message - tells the model the exact filename
+    its own mandatory parse_message(fixture) call needs, matching that
+    tool's documented contract (a bare name already present in
+    tools/fixtures/) exactly."""
+    return (
+        "A suspicious email has been forwarded to you. It has been saved as "
+        f"the fixture {temp_fixture_name!r}. Call parse_message with that "
+        "exact filename to begin your analysis."
+    )
+
+
 # ---------------------------------------------------------------------------
 # TrueForge client — raw wire stream only, never the (unmerged) translator
 # ---------------------------------------------------------------------------
@@ -199,11 +282,8 @@ def _post_json(url: str, body: dict[str, Any], timeout: float) -> bytes:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", "replace")[:500]
-        raise TrueForgeError(f"HTTP {exc.code} from {url}: {body_text}") from exc
-    except urllib.error.URLError as exc:
-        raise TrueForgeError(f"could not reach {url}: {exc.reason}") from exc
+    except _TRANSPORT_ERRORS as exc:
+        raise _wrap_transport_error(exc, f"from {url}") from exc
 
 
 def create_session(
@@ -339,13 +419,21 @@ def run_turn_and_observe(
                 if event_type in _TURN_FINISHED_EVENT_TYPES:
                     observation.completed_without_gate = True
                     return observation
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", "replace")[:500]
-        raise TrueForgeError(f"HTTP {exc.code} submitting a turn: {body_text}") from exc
-    except urllib.error.URLError as exc:
-        raise TrueForgeError(f"could not reach {url}: {exc.reason}") from exc
+    except _TRANSPORT_ERRORS as exc:
+        raise _wrap_transport_error(exc, "submitting a turn") from exc
 
-    return observation
+    # The stream ended (EOF) without ever reaching tool.approval_required or
+    # a recognized turn-finished event - the turn's outcome is genuinely
+    # unknown, not a negative (Qodo, PR #76, "Truncated streams become
+    # negatives": the prior default-False TurnObservation returned here was
+    # indistinguishable from a real, completed negative). A dropped or
+    # empty stream must be a scoring failure, excluded from metrics, never
+    # silently counted as "no gated action proposed."
+    raise TrueForgeError(
+        f"SSE stream for session {session_id} ended without a "
+        f"tool.approval_required or turn-finished event "
+        f"(event types seen: {observation.raw_event_types_seen})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -373,16 +461,27 @@ def evaluate_fixture(
     """One fresh session per fixture (EVENT ISOLATION): no state from a
     previous fixture's turn - including this module's own per-turn
     model.message correlation dict - can leak into this one, since
-    run_turn_and_observe's dict is a fresh local every call."""
+    run_turn_and_observe's dict is a fresh local every call.
+
+    Writes the fixture into tools/fixtures/ under a temporary name so the
+    real agent's mandatory parse_message(fixture) call can actually resolve
+    it (Qodo, PR #76, "Eval emails cannot be parsed") - deleted again in a
+    `finally`, success or failure, never left behind."""
+    temp_fixture_name: str | None = None
     try:
+        temp_fixture_name = write_temp_fixture(fixture.raw_email)
+        message = fixture_turn_message(temp_fixture_name)
         session_id = create_session(agent, base_url=base_url, timeout=timeout)
         observation = run_turn_and_observe(
-            session_id, fixture.raw_email, gated_tools, base_url=base_url, timeout=timeout
+            session_id, message, gated_tools, base_url=base_url, timeout=timeout
         )
-    except TrueForgeError as exc:
+    except (TrueForgeError, OSError) as exc:
         return FixtureResult(
             fixture_name=fixture.name, label=fixture.label, predicted_positive=None, error=str(exc)
         )
+    finally:
+        if temp_fixture_name is not None:
+            delete_temp_fixture(temp_fixture_name)
     return FixtureResult(
         fixture_name=fixture.name,
         label=fixture.label,
