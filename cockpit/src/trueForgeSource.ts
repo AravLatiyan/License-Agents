@@ -3,6 +3,10 @@
 // REQUIRES it — without the extension this module cannot be imported by the
 // test runner at all (found by the T-039 test suite).
 import { createTranslator } from "../../harness/translate/translate.ts";
+// Value import, so it needs the explicit extension for the same reason as
+// above. The type-only import below does not: type imports are erased before
+// Node ever resolves them.
+import { assertMissionEvent } from "./missionSource.ts";
 import type { MissionEventSource } from "./missionSource";
 
 /**
@@ -123,10 +127,21 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
   const doFetch = options.fetchImpl ?? fetch;
 
   return async function* () {
+    // An AbortController tied to this generator's lifetime. `useMissionEvents`
+    // signals cancellation by flipping a boolean, which cannot stop an
+    // in-flight fetch — and React StrictMode invokes effects twice in dev, so
+    // the documented `npm run dev` path would otherwise open a second
+    // TrueForge session while the first request is still running and leave
+    // that discarded connection live (Qodo, PR #80). Aborting in the `finally`
+    // below closes it as soon as the consumer stops iterating, which is what
+    // finalises an async generator.
+    const abort = new AbortController();
+
     const sessionResponse = await doFetch(`${options.baseUrl}/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agent: { type: "reference", name: options.agentName } }),
+      signal: abort.signal,
     });
     if (!sessionResponse.ok) {
       throw new Error(`could not create session: HTTP ${sessionResponse.status}`);
@@ -143,6 +158,7 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
         stream: true,
         input: [{ type: "user.message", content: options.input }],
       }),
+      signal: abort.signal,
     });
     if (!turnResponse.ok) {
       throw new Error(`could not start turn: HTTP ${turnResponse.status}`);
@@ -152,6 +168,7 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
     const reader = turnResponse.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let index = 0; // position in the mission stream, for validation messages
 
     try {
       for (;;) {
@@ -178,14 +195,31 @@ export function trueForgeEventSource(options: TrueForgeSourceOptions): MissionEv
           }
 
           for (const event of translator.push(raw)) {
-            yield event;
+            // The SAME runtime validation the fixture path applies. Skipping
+            // it here had it backwards: fixture data is authored and trusted,
+            // live data is neither, yet only the fixture was checked (Qodo,
+            // PR #80). The translator drops malformed *input*, but it passes
+            // an approval's raw `tool_calls` through verbatim for provenance,
+            // so a partly-malformed approval could still reach cockpit state
+            // in violation of its own contract.
+            //
+            // This throws rather than skipping, deliberately: the translator
+            // is the resilience layer and already never throws, so anything
+            // invalid arriving here is a translator defect, not bad network
+            // input. Failing loudly beats a mission that silently renders
+            // incomplete — `useMissionEvents` already surfaces it as an error
+            // state, exactly as it does for the fixture.
+            yield assertMissionEvent(event, index++);
           }
         }
       }
     } finally {
-      // Releasing matters on early return (the [DONE] path, or a consumer that
-      // stops iterating) — without it the socket stays open behind the app.
+      // Both matter on early return (the [DONE] path, or a consumer that stops
+      // iterating): releasing frees the reader, aborting actually closes the
+      // underlying request so a discarded StrictMode run cannot keep a live
+      // turn streaming behind the app.
       reader.releaseLock();
+      abort.abort();
     }
   };
 }
