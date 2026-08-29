@@ -101,7 +101,7 @@ LAST UPDATED: 2026-08-30 04:05 · **T-046 merged (`b24cbce`) — the licence loo
 
 | ID | Owner | Started (IST) | Timebox | Fallback if it expires |
 |---|---|---|---|---|
-| _(none)_ | | | | |
+| T-047 | O1 | 2026-08-30 05:17 IST | **90 min** | Land the two `findLast` fixes with their regression tests only, and leave the broader `missionPlan` coverage to a follow-up — the fix is the part with a real trigger |
 
 > Note (2026-08-30 02:07, O3 cross-owner sync): T-037 (the previous row) is done and merged (§4) — cleared on completion. Ran ~2h28min against its 2h box (started 23:39, PR #74 merged 02:06) — over, but the four PRs it took (§4) were still in active, productive Qodo-fix cycles the whole time, not stuck; noted rather than silently ignored.
 
@@ -512,6 +512,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 
 ## Slice 3 — the product (Day 3) ← *everything after this is cuttable* — *(empty; T-032 lives in §2, flagged blocked, not duplicated here)*
 
+- **T-047** [O1, cockpit integration disclosed to O3] Fix `missionPlan.ts`'s remaining `find()`→`findLast()` sites and give the file its first tests — **taken up on §7's own standing invitation** (2026-08-28, O3: "whoever next touches `missionPlan.ts`"). That note said there was no known trigger; **T-039/T-046 created one**, since a resumed turn genuinely re-emits events, and `completeEvent` now matches `mission.complete` OR `mission.failed`, so a mission that completes and then fails renders the stale terminal state. The file is the most logic-dense in the cockpit, has **zero tests**, and Qodo has already found three separate bugs in it across T-051/T-052/T-053
 - **T-038** [O1] Resolve the `return_path` drift between `harness/agent.json` and `contracts/events.ts` — `agent.json` tells IDENTITY to report `return_path`; `IdentityEvidence` has no such field. **PLAN.md contradicts itself about which is right** (§4's T-024 Qodo-pass entry defends keeping it; §7's entry the same day logs its inclusion as the error), so the decision needs a human, not a guess. `harness/README.md:92`'s "matches `IdentityEvidence` exactly" claim is false today either way. Independent of T-037: with identity evidence now represented by absence (§6), the field list never reaches the wire. **Re-checked 2026-08-30: still true** — `IdentityEvidence` (`contracts/events.ts`) has exactly `from_address`/`display_name`/`reply_to`/`lookalike_domain`/`lookalike_of`, no `return_path`, even after T-037's own contract edits — genuinely untouched, not stale
 
 > Note (2026-08-30 03:19, O1): **T-039 removed — done and merged into `main` (§4, `4d05b06`), not merely picked.** Left listed here after completion in the first draft of this sync, which would have let a later session re-pick a finished task on the strength of a backlog line stating `App.tsx` still only replays the fixture — no longer true (Qodo, PR #82). T-032/T-035/T-038 untouched.
