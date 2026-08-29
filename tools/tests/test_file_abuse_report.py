@@ -9,7 +9,9 @@ registrar during testing") cannot be violated by accident.
 from __future__ import annotations
 
 import json
+import socket
 import smtplib
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -437,3 +439,221 @@ def test_guard_runs_before_the_rdap_lookup(mock_intel, monkeypatch):
     assert result["sent"] is False
     assert "refused" in result["note"]
     mock_intel.assert_not_called(), "must not touch RDAP when sending is refused"
+
+
+# --- regressions for the bounded DNS resolution (Qodo, via O3's T-041 review) --
+
+
+@pytest.fixture(autouse=True)
+def _fresh_dns_worker_slots(monkeypatch):
+    """Give every test in this module its own resolver-slot counter.
+
+    The hanging-resolver tests below deliberately abandon workers, and an
+    abandoned worker keeps its slot for the full 30s of its fake lookup. Shared
+    state would bleed those held slots into every later test in the session and
+    make them fail for a reason that has nothing to do with what they assert.
+    """
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(
+        _smtp,
+        "_dns_worker_slots",
+        threading.BoundedSemaphore(_smtp.MAX_INFLIGHT_DNS_WORKERS),
+    )
+
+
+
+def test_hanging_getaddrinfo_cannot_hang_the_resolver_indefinitely(monkeypatch):
+    """The defect: `socket.getaddrinfo` is a blocking call into the platform
+    resolver made *before* any socket exists, so `SMTP_TIMEOUT_SECONDS` never
+    bounded it and a stalled resolver hung `file_abuse_report` forever.
+
+    Asserts the caller returns well inside the deadline, not that the lookup
+    itself is cancelled — an in-flight getaddrinfo cannot be cancelled
+    portably, which is exactly why the worker is abandoned as a daemon.
+    """
+    import time
+    from imports_mcp import _smtp
+
+    started = threading.Event()
+
+    def hanging_getaddrinfo(*a, **kw):
+        started.set()
+        time.sleep(30)  # far beyond the deadline; never expected to finish
+
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", hanging_getaddrinfo)
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", 0.25)
+
+    begin = time.monotonic()
+    result = _smtp.resolve_range_target("stalled-resolver.example")
+    elapsed = time.monotonic() - begin
+
+    assert started.wait(5), "the bounded resolver never attempted the lookup"
+    assert result is None, "a resolver that never answers must fail closed"
+    assert elapsed < 5, f"caller waited {elapsed:.1f}s — the lookup is not bounded"
+
+
+def test_dns_worker_is_a_daemon_so_it_cannot_block_shutdown(monkeypatch):
+    """An abandoned lookup must never keep the interpreter alive."""
+    import time
+    from imports_mcp import _smtp
+
+    started = threading.Event()
+
+    def hanging_getaddrinfo(*a, **kw):
+        started.set()
+        time.sleep(30)
+
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", hanging_getaddrinfo)
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", 0.25)
+
+    _smtp.resolve_range_target("daemon-check.example")
+    assert started.wait(5)
+
+    workers = [
+        t for t in threading.enumerate()
+        if t.name.startswith(_smtp._DNS_WORKER_PREFIX)
+    ]
+    assert workers, "expected the abandoned resolver worker to still be running"
+    for worker in workers:
+        assert worker.daemon is True, f"{worker.name} is not a daemon thread"
+
+
+@patch("imports_mcp.file_abuse_report.smtplib.SMTP")
+@patch("imports_mcp.file_abuse_report._domain_intel")
+def test_dns_timeout_refuses_without_attempting_smtp(mock_intel, mock_smtp, monkeypatch):
+    """End to end: a stalled resolver must make file_abuse_report refuse — no
+    SMTP connection, no RDAP lookup, and never a fallback to an unvalidated
+    destination."""
+    import time
+    from imports_mcp import _smtp
+
+    mock_intel.return_value = _intel()
+    monkeypatch.setenv("SMTP_HOST", "stalled.example")
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", 0.25)
+
+    result = file_abuse_report(DOMAIN, EVIDENCE)
+
+    assert result["sent"] is False
+    assert "refused" in result["note"]
+    mock_smtp.assert_not_called()
+    mock_intel.assert_not_called()
+
+
+def test_gaierror_still_fails_closed(monkeypatch):
+    """Pre-existing behaviour must survive the rewrite."""
+    from imports_mcp import _smtp
+
+    def failing(*a, **kw):
+        raise socket.gaierror("name or service not known")
+
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", failing)
+    assert _smtp.resolve_range_target("nope.invalid") is None
+
+
+def test_empty_dns_answer_fails_closed(monkeypatch):
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: [])
+    assert _smtp.resolve_range_target("empty.example") is None
+
+
+def test_loopback_still_resolves_to_its_literal(monkeypatch):
+    """The Range-only guarantee is unchanged by the bounding."""
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(
+        _smtp.socket, "getaddrinfo",
+        lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+    assert _smtp.resolve_range_target("localhost") == "127.0.0.1"
+
+
+def test_mixed_loopback_and_routable_answers_still_rejected(monkeypatch):
+    """DNS-rebinding protection: every answer must be loopback, so a name
+    resolving to both must not be treated as local."""
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(
+        _smtp.socket, "getaddrinfo",
+        lambda *a, **kw: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.9", 0)),
+        ],
+    )
+    assert _smtp.resolve_range_target("rebind.example") is None
+
+
+def test_stalled_lookups_cannot_accumulate_workers_without_bound(monkeypatch):
+    """A timed-out lookup cannot be cancelled, so its worker outlives the call.
+    Without a cap those abandoned threads pile up on every retry until thread
+    creation itself fails (Qodo, PR #66) — `daemon=True` stops them delaying
+    shutdown but does not reclaim them.
+
+    Drives many more stalled lookups than the cap and asserts the live worker
+    count never exceeds it, and that the excess calls still fail closed.
+    """
+    import time
+    from imports_mcp import _smtp
+
+    cap = 2
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(cap))
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+
+    def live_workers():
+        return [
+            t for t in threading.enumerate()
+            if t.name.startswith(_smtp._DNS_WORKER_PREFIX)
+        ]
+
+    baseline = len(live_workers())
+    for _ in range(cap + 8):
+        assert _smtp.resolve_range_target("stalled.example") is None
+        assert len(live_workers()) - baseline <= cap, (
+            "abandoned resolver workers accumulated past the cap"
+        )
+
+    assert len(live_workers()) - baseline == cap, (
+        "expected the cap to be saturated by the stalled lookups"
+    )
+
+
+def test_a_completed_lookup_hands_its_slot_back(monkeypatch):
+    """The cap must bound *concurrent* workers, not total lookups: an ordinary
+    run resolves far more times than the cap and must never start refusing."""
+    from imports_mcp import _smtp
+
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(
+        _smtp.socket, "getaddrinfo",
+        lambda *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+
+    for _ in range(20):
+        assert _smtp.resolve_range_target("localhost") == "127.0.0.1"
+
+
+def test_saturated_slots_refuse_instead_of_queueing(monkeypatch):
+    """Saturation must fail closed immediately — not wait for a slot. Waiting
+    would reintroduce exactly the unbounded hang the timeout exists to stop."""
+    import time
+    from imports_mcp import _smtp
+
+    timeout = 2.0
+    monkeypatch.setattr(_smtp, "_dns_worker_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(_smtp, "DNS_TIMEOUT_SECONDS", timeout)
+    monkeypatch.setattr(_smtp.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+
+    assert _smtp.resolve_range_target("stalled.example") is None  # takes the slot
+
+    begin = time.monotonic()
+    assert _smtp.resolve_range_target("stalled.example") is None
+    elapsed = time.monotonic() - begin
+
+    # Generous margin on purpose: the point is that this call did not wait a
+    # whole `timeout` for the held slot, not that it returned in some exact time.
+    assert elapsed < timeout / 2, (
+        f"waited {elapsed:.2f}s for a slot — saturation must refuse, not queue"
+    )
