@@ -1,4 +1,4 @@
-import type { MissionEvent, ProposedActionName } from "../../contracts/events";
+import type { ApprovalStatus, MissionEvent, ProposedActionName } from "../../contracts/events";
 import { buildApprovalGates } from "./missionPlan";
 
 const ACTION_LABEL: Record<ProposedActionName, string> = {
@@ -26,21 +26,61 @@ const ACTION_LABEL: Record<ProposedActionName, string> = {
  * DetonationPanel's "no screenshot" state (CLAUDE.md: don't guess API
  * behavior, don't build fake functionality).
  */
-export function ApprovalPanel({ events }: { events: MissionEvent[] }) {
+/** T-046: how a click reaches TrueForge. Optional on purpose — with no live
+ *  session (fixture playback, or a clean clone with no server) there is
+ *  nothing to resume, and the buttons stay honestly disabled exactly as
+ *  before rather than pretending to work. */
+export type ApprovalDecisionHandler = (decision: {
+  gateIndex: 1 | 2 | 3 | 4;
+  threadId: string;
+  toolCallId: string;
+  status: ApprovalStatus;
+}) => void;
+
+export function ApprovalPanel({
+  events,
+  onDecision,
+  pendingGates,
+}: {
+  events: MissionEvent[];
+  onDecision?: ApprovalDecisionHandler;
+  /** Gates whose decision is mid-flight; their buttons lock until it lands. */
+  pendingGates?: ReadonlySet<number>;
+}) {
   const gates = buildApprovalGates(events);
   return (
     <section className="approval-panel" aria-label="Licence gates">
       <h2>Licence gates</h2>
       <ol className="approval-gates">
         {gates.map((gate) => (
-          <ApprovalGateCard key={gate.gateIndex} gate={gate} />
+          <ApprovalGateCard
+            key={gate.gateIndex}
+            gate={gate}
+            onDecision={onDecision}
+            pending={pendingGates?.has(gate.gateIndex) ?? false}
+          />
         ))}
       </ol>
     </section>
   );
 }
 
-function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates>[number] }) {
+function ApprovalGateCard({
+  gate,
+  onDecision,
+  pending = false,
+}: {
+  gate: ReturnType<typeof buildApprovalGates>[number];
+  onDecision?: ApprovalDecisionHandler;
+  pending?: boolean;
+}) {
+  // The gate can only be decided if we know which tool call it belongs to.
+  // That comes from the raw approval event TrueForge sent, so a gate rebuilt
+  // from a reconnect that never saw the request (missionPlan tolerates that,
+  // T-056) correctly stays undecidable rather than submitting a guess.
+  const toolCallId = gate.toolCallId ?? null;
+  const threadId = gate.request?.thread_id ?? null;
+  const canDecide = Boolean(onDecision && toolCallId && threadId) && !pending;
   const label = gate.action ? ACTION_LABEL[gate.action] : null;
 
   let status: "pending" | "requested" | "allowed" | "denied" | "executed";
@@ -87,15 +127,34 @@ function ApprovalGateCard({ gate }: { gate: ReturnType<typeof buildApprovalGates
 
       {status === "requested" && (
         <div className="approval-gate__actions">
-          <button type="button" disabled title="Live submission not wired yet — see PLAN.md §8">
+          <button
+            type="button"
+            disabled={!canDecide}
+            title={pending ? "Submitting…" : canDecide ? "Grant the licence for this action" : "No live TrueForge turn to resume"}
+            onClick={() =>
+              canDecide &&
+              onDecision?.({ gateIndex: gate.gateIndex, threadId: threadId!, toolCallId: toolCallId!, status: "allow" })
+            }
+          >
             Allow
           </button>
-          <button type="button" disabled title="Live submission not wired yet — see PLAN.md §8">
+          <button
+            type="button"
+            disabled={!canDecide}
+            title={pending ? "Submitting…" : canDecide ? "Refuse the licence for this action" : "No live TrueForge turn to resume"}
+            onClick={() =>
+              canDecide &&
+              onDecision?.({ gateIndex: gate.gateIndex, threadId: threadId!, toolCallId: toolCallId!, status: "deny" })
+            }
+          >
             Deny
           </button>
-          <p className="approval-gate__note">
-            Presentation only — no live TrueForge turn to resume yet (§8).
-          </p>
+          {pending && <p className="approval-gate__note">Submitting decision…</p>}
+          {!canDecide && !pending && (
+            <p className="approval-gate__note">
+              Presentation only — no live TrueForge turn to resume (fixture playback).
+            </p>
+          )}
         </div>
       )}
 
