@@ -216,6 +216,9 @@ export function assertMissionEvent(value: unknown, index: number): MissionEvent 
       ) {
         fail(index, "action: expected {action: ProposedActionName, arguments}");
       }
+      // Required since T-046: without it a consumer would fall back to
+      // approval.tool_calls[0] and resume the wrong call for gate 2+.
+      if (!isStr(value.tool_call_id)) fail(index, "tool_call_id: expected string");
       checkToolApprovalRequired(value.approval, index);
       break;
     case "mission.approval_resolved":

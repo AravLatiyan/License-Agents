@@ -206,6 +206,9 @@ export interface ApprovalGateState {
    *  `ApprovalRequiredEvent.action.arguments` - the half of "shows the
    *  literal request" (CLAUDE.md) that survives T-037's correction. */
   requestArguments?: Record<string, unknown>;
+  /** The tool call THIS gate is about, straight from the event. Never derived
+   *  from `request.tool_calls[0]` - see ApprovalRequiredEvent.tool_call_id. */
+  toolCallId?: string;
   resolved?: ApprovalStatus;
   reason?: string;
   resultSummary?: string;
@@ -236,6 +239,7 @@ export function buildApprovalGates(events: MissionEvent[]): ApprovalGateState[] 
       const g = gateState(e.gate_index);
       g.action = e.action.action;
       g.requestArguments = e.action.arguments;
+      g.toolCallId = e.tool_call_id;
       g.request = e.approval;
       // A fresh request for a gate index that already carries a prior
       // outcome (a retried tool call, same pattern as T-053's retried
