@@ -15,6 +15,8 @@ import pytest
 
 from eval_lib import (
     AGENT_JSON_PATH,
+    MAX_TURN_ATTEMPTS,
+    RetryableTurnError,
     FIXTURES_DIR,
     FixtureResult,
     TrueForgeError,
@@ -403,6 +405,9 @@ def test_a_phish_whose_turn_errors_is_a_failure_not_a_false_negative(
         _fixture(name="sample-1.eml", label="phish"),
         agent="universal-imports",
         gated_tools=GATED_TOOLS,
+        # Retries are covered separately; this test is about the scoring
+        # semantics of a failed turn, so it buys exactly one attempt.
+        max_attempts=1,
     )
 
     assert result.predicted_positive is None, "an errored turn must never be a negative"
@@ -472,6 +477,305 @@ def test_a_gate_that_fires_before_an_errored_turn_done_still_counts(mock_urlopen
 
     assert observation.gate_fired is True
     assert observation.resolved_gated_tools == ["quarantine"]
+
+
+# ---------------------------------------------------------------------------
+# Bounded retry for transient model-transport failures
+#
+# TrueForge hardcodes maxRetries: 0 (VercelAILLM.ts:939), so a connect-layer
+# blip the Vercel AI SDK itself stamps `isRetryable: true` still kills the
+# whole turn. Every attempt below is a real billed turn in production, so
+# these tests pin exactly which failures earn one and which never do.
+# ---------------------------------------------------------------------------
+
+
+def _errored_turn(message):
+    return {"type": "turn.done", "state": {"status": "error", "message": message}}
+
+
+def _session_ok():
+    return _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8"))
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_retryable_transport_failure_raises_the_retryable_subclass(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(RetryableTurnError):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_provider_error_is_not_the_retryable_subclass(mock_urlopen):
+    """Still a failure - just never worth paying for a second attempt."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(_errored_turn("model produced an invalid tool call"))
+    )
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "authentication_error: invalid x-api-key",
+        "rate_limit_error: number of requests has exceeded your rate limit",
+        "invalid_request_error: max_tokens must be greater than 0",
+        "overloaded_error",
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_auth_rate_limit_and_invalid_request_are_never_retryable(mock_urlopen, message):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_errored_turn(message)))
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_cancelled_turn_is_never_retryable(mock_urlopen):
+    """Somebody stopped it on purpose; re-spending to override that is wrong."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            {"type": "turn.done", "state": {"status": "cancelled", "reason": "user_cancelled"}}
+        )
+    )
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_one_transient_failure_then_success_scores_normally(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),   # attempt 1: blip
+        _session_ok(),
+        _FakeResponse(                                              # attempt 2: gate fires
+            lines=_sse_lines(
+                _model_message("msg-1", "quarantine", "call-1"),
+                _approval_required([("call-1", "msg-1")]),
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.error is None
+    assert result.attempts == 2
+    assert result.resolved_gated_tools == ["quarantine"], "no duplicate gate events across retries"
+
+    report = score([result])
+    assert report.true_positives == 1
+    assert report.total_scored == 1
+    assert report.failed == []
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_repeated_transient_failures_eventually_fail_the_fixture(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is None, "an exhausted retry is still never a negative"
+    assert result.attempts == 3
+    assert "gave up after 3 attempts" in result.error
+
+    report = score([result])
+    assert report.failed == [result]
+    assert report.total_scored == 0
+    assert report.false_negatives == 0
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_retry_budget_is_bounded(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """No unbounded loop: exactly MAX_TURN_ATTEMPTS turns, no more."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ] * 10
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.attempts == MAX_TURN_ATTEMPTS
+    # one create_session + one turn per attempt, and nothing beyond the budget
+    assert mock_urlopen.call_count == 2 * MAX_TURN_ATTEMPTS
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_non_retryable_failure_is_not_retried_at_all(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines(_errored_turn("authentication_error: invalid x-api-key"))),
+    ]
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 1
+    assert mock_urlopen.call_count == 2, "an auth failure must never cost a second billed turn"
+    assert mock_sleep.call_count == 0
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_successful_turn_is_never_retried(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="ham-1.eml", label="ham"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is False
+    assert result.attempts == 1
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_gate_that_already_fired_is_never_retracted_by_a_later_failure(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    """The operator has already seen the licence request. Reading stops at
+    the gate, so the errored turn.done behind it is never even parsed - and
+    no second turn is paid for."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(
+            lines=_sse_lines(
+                _model_message("msg-1", "quarantine", "call-1"),
+                _approval_required([("call-1", "msg-1")]),
+                _LIVE_ERRORED_TURN_DONE,
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.attempts == 1
+    assert result.error is None
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_dropped_stream_is_not_retried(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """A truncated stream leaves the turn's outcome unknown and possibly
+    still running server-side; re-submitting would double-spend."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [_session_ok(), _FakeResponse(lines=[])]
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 1
+    assert "ended without" in result.error
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_each_retry_uses_a_fresh_session(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """Event isolation is what makes a retry safe to score: attempt 2 reads
+    its own session's stream, so attempt 1's events cannot leak in."""
+    mock_write.return_value = "eval-x.eml"
+    first = _FakeResponse(body=json.dumps({"data": {"id": "sess-A"}}).encode("utf-8"))
+    second = _FakeResponse(body=json.dumps({"data": {"id": "sess-B"}}).encode("utf-8"))
+    mock_urlopen.side_effect = [
+        first, _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        second, _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    turn_urls = [
+        c[0][0].full_url for c in mock_urlopen.call_args_list if "/turns" in c[0][0].full_url
+    ]
+    assert turn_urls == [
+        "http://localhost:8790/api/v1/sessions/sess-A/turns",
+        "http://localhost:8790/api/v1/sessions/sess-B/turns",
+    ]
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_temp_fixture_is_written_once_and_deleted_once_across_retries(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert mock_write.call_count == 1
+    assert mock_delete.call_count == 1
 
 
 # ---------------------------------------------------------------------------

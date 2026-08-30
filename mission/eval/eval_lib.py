@@ -123,6 +123,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -185,6 +186,7 @@ _TURN_FINISHED_EVENT_TYPES = ("turn.done", "mission.complete")
 # docstring promises never happens; it was already handled for truncated
 # streams and transport errors, and simply missed for an errored turn.
 _TURN_SUCCEEDED_STATUS = "done"
+_TURN_ERROR_STATUS = "error"
 
 # Transport-layer failures that mean "this fixture's evaluation could not be
 # completed," never "the model quietly declined to act." HTTPError/URLError
@@ -206,6 +208,44 @@ _TRANSPORT_ERRORS = (
 class TrueForgeError(Exception):
     """A fixture's evaluation could not be completed. Always surfaced as a
     FixtureResult.error, never silently treated as a negative prediction."""
+
+
+class RetryableTurnError(TrueForgeError):
+    """A turn that failed for a transport reason the provider SDK itself
+    classifies as retryable - see _RETRYABLE_TURN_ERROR_MARKERS.
+
+    Subclasses TrueForgeError deliberately: when the retry budget is spent
+    this still reaches evaluate_fixture's existing `except TrueForgeError`
+    and still becomes a FixtureResult.error excluded from both metrics. The
+    subclass only decides whether one more attempt is worth making, never
+    whether a failure counts."""
+
+
+# TrueForge does not retry model calls: VercelAILLM.ts:939 hardcodes
+# `maxRetries: 0` in its request builder, with no env knob (§7,
+# 2026-08-30). So a connect-layer blip that the Vercel AI SDK has already
+# classified as retryable still kills the whole turn, and the retry has to
+# live here instead.
+#
+# `Cannot connect to API:` is that SDK's own marker, not TrueForge's:
+# @ai-sdk/provider-utils' handleFetchError builds that exact prefix in both
+# of its network-failure branches, and BOTH set `isRetryable: true`. No
+# other branch of that function produces the prefix, so matching it maps
+# one-to-one onto the SDK's own retryable classification rather than onto a
+# guess of ours.
+#
+# Everything else stays unretried by construction: an auth failure, an
+# invalid request, a rate limit and a provider-side model error all arrive
+# with an HTTP status and a different message, and a `cancelled` turn is a
+# deliberate stop, not a blip.
+_RETRYABLE_TURN_ERROR_MARKERS = ("cannot connect to api:",)
+
+# Three attempts total. Bounded on purpose and kept small: every attempt is
+# a real, billed turn, so this trades a bounded amount of money for not
+# losing a fixture to one dropped socket - it is not a way to push through
+# a provider that is genuinely down.
+MAX_TURN_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2.0
 
 
 def _wrap_transport_error(exc: BaseException, context: str) -> TrueForgeError:
@@ -421,6 +461,16 @@ def _terminal_status(event: dict[str, Any]) -> str | None:
     return status if isinstance(status, str) else None
 
 
+def _is_retryable_turn_error(detail: str) -> bool:
+    """True only for a failure message carrying the provider SDK's own
+    retryable-transport marker. Substring match on a lowercased message: the
+    marker is a fixed English prefix the SDK builds itself, and the variable
+    part is the underlying cause, which was an empty string in the live
+    failure that prompted this."""
+    lowered = detail.lower()
+    return any(marker in lowered for marker in _RETRYABLE_TURN_ERROR_MARKERS)
+
+
 def _raise_if_turn_failed(event: dict[str, Any], session_id: str) -> str | None:
     """Raises unless the turn genuinely completed. Returns the status seen.
 
@@ -440,10 +490,16 @@ def _raise_if_turn_failed(event: dict[str, Any], session_id: str) -> str | None:
             if isinstance(value, str) and value.strip():
                 detail = f": {value.strip()}"
                 break
-    raise TrueForgeError(
+    summary = (
         f"turn for session {session_id} finished with status {status!r}{detail} - "
         "the turn never reached a verdict, so this fixture could not be scored"
     )
+    # Only an *errored* turn can be transient. A cancelled turn was stopped
+    # deliberately by somebody, and re-submitting it would be re-spending
+    # money to override a decision.
+    if status == _TURN_ERROR_STATUS and _is_retryable_turn_error(detail):
+        raise RetryableTurnError(summary)
+    raise TrueForgeError(summary)
 
 
 @dataclass
@@ -567,6 +623,10 @@ class FixtureResult:
     predicted_positive: bool | None  # None means evaluation failed, never coerced to False
     resolved_gated_tools: list[str] = field(default_factory=list)
     error: str | None = None
+    attempts: int = 1
+    """How many turns this fixture actually cost. >1 means a transient
+    transport failure was retried - reported so a run's real spend and its
+    blip rate are both visible, never folded into the metrics."""
 
 
 def evaluate_fixture(
@@ -576,33 +636,75 @@ def evaluate_fixture(
     gated_tools: frozenset[str],
     base_url: str | None = None,
     timeout: float = TRUEFORGE_TIMEOUT_SECONDS,
+    max_attempts: int = MAX_TURN_ATTEMPTS,
+    retry_backoff_seconds: float = RETRY_BACKOFF_SECONDS,
 ) -> FixtureResult:
-    """One fresh session per fixture (EVENT ISOLATION): no state from a
+    """One fresh session per attempt (EVENT ISOLATION): no state from a
     previous fixture's turn - including this module's own per-turn
     model.message correlation dict - can leak into this one, since
-    run_turn_and_observe's dict is a fresh local every call.
+    run_turn_and_observe's dict is a fresh local every call. That is also
+    what makes the retry below safe to score: a retried attempt is read
+    from its own session's stream, so no event can be counted twice and no
+    earlier attempt's tool calls can be mistaken for this one's.
 
     Writes the fixture into tools/fixtures/ under a temporary name so the
     real agent's mandatory parse_message(fixture) call can actually resolve
     it (Qodo, PR #76, "Eval emails cannot be parsed") - deleted again in a
-    `finally`, success or failure, never left behind."""
+    `finally`, success or failure, never left behind. The temp file is
+    written once and reused across attempts; only the session and the turn
+    are new each time.
+
+    RETRY - bounded, and only for a transport failure the provider SDK
+    itself calls retryable (RetryableTurnError). Two things make this safe
+    to do at all: such a failure arrives *on a turn.done*, so the previous
+    turn is known terminal and cannot still be running up a bill in the
+    background; and a gate that already fired returns before any turn.done
+    is read, so a retry can never retract a licence request the operator
+    has already seen. Every other failure - auth, invalid request, rate
+    limit, provider error, a cancelled turn, a dropped stream, a transport
+    error talking to TrueForge itself - is NOT retried: a dropped stream in
+    particular may leave a turn still running server-side, and re-submitting
+    would double-spend."""
     temp_fixture_name: str | None = None
+    attempts = 0
     try:
         temp_fixture_name = write_temp_fixture(fixture.raw_email)
         message = fixture_turn_message(temp_fixture_name)
-        session_id = create_session(agent, base_url=base_url, timeout=timeout)
-        observation = run_turn_and_observe(
-            session_id, message, gated_tools, base_url=base_url, timeout=timeout
-        )
+        while True:
+            attempts += 1
+            try:
+                session_id = create_session(agent, base_url=base_url, timeout=timeout)
+                observation = run_turn_and_observe(
+                    session_id, message, gated_tools, base_url=base_url, timeout=timeout
+                )
+            except RetryableTurnError as exc:
+                if attempts >= max_attempts:
+                    result = FixtureResult(
+                        fixture_name=fixture.name,
+                        label=fixture.label,
+                        predicted_positive=None,
+                        error=f"{exc} (gave up after {attempts} attempts)",
+                        attempts=attempts,
+                    )
+                    break
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds)
+                continue
+            result = FixtureResult(
+                fixture_name=fixture.name,
+                label=fixture.label,
+                predicted_positive=observation.gate_fired,
+                resolved_gated_tools=observation.resolved_gated_tools,
+                attempts=attempts,
+            )
+            break
+    except (TrueForgeError, OSError) as exc:
         result = FixtureResult(
             fixture_name=fixture.name,
             label=fixture.label,
-            predicted_positive=observation.gate_fired,
-            resolved_gated_tools=observation.resolved_gated_tools,
-        )
-    except (TrueForgeError, OSError) as exc:
-        result = FixtureResult(
-            fixture_name=fixture.name, label=fixture.label, predicted_positive=None, error=str(exc)
+            predicted_positive=None,
+            error=str(exc),
+            attempts=max(attempts, 1),
         )
     finally:
         # Cleanup runs whatever happened, but it must never become the

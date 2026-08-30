@@ -115,6 +115,43 @@ deliberately not treated as turn-terminal here: it fires per thread, so a
 delegated subagent finishing would end the read before the root agent had
 proposed anything.
 
+## Retries
+
+TrueForge does not retry model calls - `VercelAILLM.ts:939` hardcodes
+`maxRetries: 0`, with no env knob - so a connect-layer blip that the Vercel
+AI SDK has *already* classified `isRetryable: true` still kills the whole
+turn. The first live fixture died exactly that way.
+
+`evaluate_fixture` therefore retries, narrowly:
+
+- **Only** a `turn.done` whose error message carries the AI SDK's own
+  retryable-transport marker, `Cannot connect to API:`. That prefix is built
+  in both of `handleFetchError`'s network-failure branches and **both** set
+  `isRetryable: true`; nothing else in that function produces it. So the
+  match maps onto the SDK's own classification, not a guess.
+- **Never** an auth failure, invalid request, rate limit, provider-side
+  model error, or a `cancelled` turn (somebody stopped that one on purpose).
+- **Never** a dropped stream or a transport error talking to TrueForge
+  itself: those leave the turn's outcome unknown and possibly still running
+  server-side, so re-submitting would double-spend.
+- **Bounded** at `MAX_TURN_ATTEMPTS = 3` with a 2 s backoff. Every attempt
+  is a real billed turn - this trades a bounded amount of money for not
+  losing a fixture to one dropped socket, and is not a way to push through
+  a provider that is genuinely down.
+
+A retry runs in a **fresh session**, which is what makes it safe to score:
+attempt 2 reads its own stream, so no event is counted twice. When the
+budget is spent the fixture still becomes a `report.failed` entry excluded
+from both metrics - `RetryableTurnError` subclasses `TrueForgeError`, so it
+only decides whether one more attempt is worth making, never whether a
+failure counts. `FixtureResult.attempts` records what each fixture actually
+cost, and `run_eval.py` prints the total turns spent alongside the fixture
+count.
+
+A gate that has already fired is never retracted: reading stops at
+`tool.approval_required`, so a later errored `turn.done` is never even
+parsed and no second turn is bought.
+
 ## Safety
 
 This harness never resumes a paused gate. The instant `tool.approval_required`
