@@ -423,6 +423,9 @@ loses will be lost to refusing a fallback, not to the work being too hard.
 ---
 ---
 
+**2026-08-30, coordinator pass — a parallel audit of shipped code found two real defects that no Qodo pass ever raised, because Qodo only ever sees a diff.**
+T-073 (`notify_impersonated` missing its external-SMTP guard) and T-074 (a post-approval tool failure that may never reach the operator) both live in code that was reviewed, approved and merged. Each is invisible in the diff that introduced it and only appears when you compare a file against its sibling, or follow one event shape across two folders. **Suggested change: §15a should say plainly that Qodo reviews diffs, not systems, and that the four gated actions deserve one whole-file read against each other before submission.** Also found and deliberately NOT acted on: `translate.ts`'s `pendingCalls`/`gateIndexByToolCallId` maps are never evicted once a call resolves — unbounded growth that is harmless at demo scale and not worth the churn today.
+
 # §9 THE PROJECT
 
 > Forward it anything asking you to click, pay, reset, or approve. It detonates the payload in a
@@ -560,6 +563,12 @@ CLAUDE.md      the rules Claude Code auto-reads
 > Note (2026-08-29, O2): T-022 done (§4) — removed from this list. Last of Slice 2's three planned read-only `imports-mcp` tools; `domain_intel`/`url_reputation`/`correspondence_history` all now exist.
 
 ## Slice 3 — the product (Day 3) ← *everything after this is cuttable* — *(empty; T-032 lives in §2, flagged blocked, not duplicated here)*
+
+- **T-073** **[SECURITY]** [O2 folder] **`notify_impersonated` has no external-SMTP guard — its sibling `file_abuse_report` does.** Found 2026-08-30 by a parallel security audit of shipped code, not by a Qodo pass. `notify_impersonated()` connects to whatever `smtp_target()` resolves with no `resolve_range_target()` check and no `ALLOW_EXTERNAL_SMTP` opt-in, while `file_abuse_report.py` guards exactly that path using helpers already in `_smtp.py`. `.env.example` already *claims* trap #6 covers this tool; the code does not. It mails a **model-supplied** address, so this is the more dangerous of the two, not the less. **In flight 2026-08-30, test-first.**
+
+- **T-074** **[SECURITY]** [O1 folder] **A gated tool that fails *after* the licence is granted may never surface that failure to the operator.** Three of the four gated wrappers in `server.py` validate by raising `ToolError`, which runs after TrueForge's approval gate; `translate.ts`'s `handleToolResponse` accepts only a payload matching the tool's own success/failure shape and returns `[]` otherwise, so the cockpit's panel can sit on "Allowed — executing..." forever. Directly against §17's whole point — a human grants a licence and then sees what happened. **Under investigation 2026-08-30; must not touch `contracts/` (2 approvals), so if a new event type is genuinely required it stops and becomes a human decision.**
+
+- **T-075** [PLAN.md] Two undispositioned Qodo Bug findings from **PR #25** — the only genuinely open ones left after auditing every PR (150 findings: 132 resolved, 9 dismissed with reasoning, 7 more resolved by checking current HEAD). Both docs-only: (1) T-034's §4 entry says an `mcp_servers` config entry "wires the connector", omitting that the remote server must also be separately registered and running before tool discovery works; (2) a history entry dated 2026-08-28 sits among entries dated 2026-08-27. Low value next to T-073/T-074, recorded so the review trail is complete rather than quietly abandoned.
 
 > Note (2026-08-30, coordinator reconciliation): **T-038 removed — done and merged into `main` (§4, PR #89, `054e0ab`), not merely picked.** Removed here in the same pass that recorded it in §4/§6, so it cannot be picked twice. This is the O1 Slice-3 list's last entry; the section header above already notes T-032 lived in §2 rather than here, and T-032 is now done too (§4) — so O1 and O2 have no unblocked backlog items left, which is why §2's refill pulled from the cross-cutting list (T-042, T-067) instead.
 
