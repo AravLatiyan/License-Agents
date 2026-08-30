@@ -272,8 +272,9 @@ Reload the page to start a run; approve or deny each gate as it appears.
              (RDAP / crt.sh / URLhaus), correspondence history, detonation, and the four
              gated actions.
 /cockpit     The UI — a Vite + React app that shows a mission as it happens.
-/mission     Sample email fixtures, the fake portal, agent skills, and the evaluation harness.
-/range       Docker Compose for Mailpit (mail capture) + the fake phishing portal.
+/mission     The agent's skills, the evaluation harness, and its research-corpus fixtures.
+/range       Docker Compose for Mailpit (mail capture), the fake phishing portal, and the
+             20 sample emails that get seeded into Mailpit.
 PLAN.md      The full plan, task board, decisions, and history — read this for "why".
 CLAUDE.md    The working rules this project holds itself to.
 ```
@@ -286,7 +287,12 @@ CLAUDE.md    The working rules this project holds itself to.
 - Remote images in emails are never rendered (a loaded tracking pixel confirms a live address).
 - Attachments are hashed (SHA-256) and never opened or executed.
 - Sample emails use only invented brands ("Northgate Trust", "Meridian Courier"), never a
-  real company, and their links point at the local test portal.
+  real company. The 20 emails seeded into the local mail server link only to the local test
+  portal.
+- `detonate` follows the links it is given. It refuses private and loopback addresses (unless
+  a test-only flag is set), but it will make a real request — capped at 5 seconds and 10
+  redirects — to a public address. One of the three starter files, `01-credential-phish.eml`,
+  points at an external IP for this reason.
 - The gated actions refuse to reach outside the local Range by default. In particular,
   `file_abuse_report` will not email a real registrar unless you deliberately opt in.
 - Every one of the four consequential actions stops for an explicit human Allow/Deny before
@@ -330,8 +336,9 @@ legitimate) on how often it correctly proposes a gated action. It needs the live
 The design target for detonation is a headless browser running in a remote Daytona sandbox,
 producing a real screenshot. It is not built: no Daytona account is configured, and the
 "second run must be fast" requirement needs a snapshot mechanism TrueForge doesn't expose.
-The `tools/fixtures/` links that point at the local portal are therefore not auto-detonated
-by a default run. See `PLAN.md` §5.
+(Note: the Range's seeded emails link to the local test portal on `localhost`, and
+`detonate`'s guard refuses loopback addresses unless the test-only flag is set — so those
+particular links are not followed by a normal run.) See `PLAN.md` §5.
 
 ### More detail
 
