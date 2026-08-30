@@ -39,6 +39,13 @@ the tool actually being invoked. That last step is NOT simply
 `.function.name`: TrueForge proxies every MCP tool, so `function.name` is
 `call_tool` and the real name is `tool_name` inside that call's own
 JSON-encoded `arguments` (see _MCP_PROXY_TOOL_NAMES).
+On the live stream the finished message is not
+available in time: TrueForge opens an assistant turn with a `model.message`
+HEADER carrying no tool calls, streams the calls as `model.message.delta`
+events, and only assembles the complete message afterwards (persisted, and
+returned by GET /events, but emitted too late to correlate against). So the
+deltas are accumulated per event id and per tool-call index and folded into
+the same shape - structured tool-call data throughout, never prose.
 This module keeps that correlation state per-turn (never
 across fixtures — see EVENT ISOLATION below).
 
@@ -488,6 +495,86 @@ def _effective_tool_name(function: dict[str, Any]) -> str | None:
     return name
 
 
+# TrueForge's SSE stream opens an assistant turn with a `model.message` event
+# that is only a HEADER - type, id, thread_id, created_at and nothing else:
+#
+#   // AgentThread.ts:1021 - "We start the delta stream with a model message event."
+#   yield { type: EventType.MODEL_MESSAGE, thread_id, created_at, id: modelMessageEventId };
+#
+# The tool calls arrive afterwards as `model.message.delta` events, and the
+# assembled message that carries `tool_calls` is built once the stream ends -
+# it is persisted and returned by GET /events, but it is not what reaches this
+# reader before `tool.approval_required` fires.
+#
+# Found on live fixtures #3 and #4 (2026-08-30): every gated call resolved to
+# None even after the call_tool proxy was handled, because the correlation
+# dict only ever held a header for that event id. Replaying the *persisted*
+# events resolved correctly and hid the problem - a stored log is not the
+# stream.
+#
+# The deltas do carry the real structured tool call (ExtendedChunkDeltaToolCall:
+# index, id, function.name, function.arguments), fragmented across events, so
+# the names come from accumulating those - never from prose, never from
+# matching text.
+def _accumulate_delta_tool_calls(
+    accumulator: dict[str, dict[int, dict[str, Any]]], event: dict[str, Any]
+) -> None:
+    """Folds one `model.message.delta` into per-event, per-index tool calls.
+
+    A delta's own `id` is the same modelMessageEventId the finished message
+    carries, which is what `tool.approval_required.source_event_id` points at.
+    `function.name` and `function.arguments` may each arrive whole or split
+    across several deltas, so both are concatenated in arrival order.
+    """
+    event_id = event.get("id")
+    deltas = event.get("tool_calls")
+    if not isinstance(event_id, str) or not isinstance(deltas, list):
+        return
+    per_index = accumulator.setdefault(event_id, {})
+    for delta in deltas:
+        if not isinstance(delta, dict):
+            continue
+        index = delta.get("index")
+        if not isinstance(index, int):
+            continue
+        entry = per_index.setdefault(index, {"id": None, "name": "", "arguments": ""})
+        call_id = delta.get("id")
+        if isinstance(call_id, str) and call_id:
+            entry["id"] = call_id
+        function = delta.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if isinstance(name, str):
+            entry["name"] += name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            entry["arguments"] += arguments
+
+
+def _assembled_delta_tool_calls(
+    per_index: dict[int, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Re-shapes accumulated deltas into the same `tool_calls` shape a finished
+    `model.message` carries, so one resolver handles both - including the
+    call_tool proxy unwrap, unchanged."""
+    calls: list[dict[str, Any]] = []
+    for index in sorted(per_index):
+        entry = per_index[index]
+        if not entry["id"]:
+            # Without an id this call cannot be matched to a ToolCallRef.
+            # Dropped rather than guessed at.
+            continue
+        calls.append(
+            {
+                "id": entry["id"],
+                "type": "function",
+                "function": {"name": entry["name"], "arguments": entry["arguments"]},
+            }
+        )
+    return calls
+
+
 def _resolve_tool_name(
     model_message_tool_calls: dict[str, list[Any]], source_event_id: Any, tool_call_id: Any
 ) -> str | None:
@@ -609,6 +696,7 @@ def run_turn_and_observe(
 
     observation = TurnObservation()
     model_message_tool_calls: dict[str, list[Any]] = {}
+    delta_tool_calls: dict[str, dict[int, dict[str, Any]]] = {}
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -627,19 +715,36 @@ def run_turn_and_observe(
                 if event_type == "model.message":
                     event_id = event.get("id")
                     tool_calls = event.get("tool_calls")
-                    if isinstance(event_id, str) and isinstance(tool_calls, list):
+                    # Only a populated list is worth recording. The event that
+                    # OPENS an assistant turn carries no tool_calls at all, and
+                    # an empty list would overwrite deltas already accumulated
+                    # under the same id with nothing.
+                    if isinstance(event_id, str) and isinstance(tool_calls, list) and tool_calls:
                         model_message_tool_calls[event_id] = tool_calls
+                    continue
+
+                if event_type == "model.message.delta":
+                    _accumulate_delta_tool_calls(delta_tool_calls, event)
                     continue
 
                 if event_type == "tool.approval_required":
                     observation.gate_fired = True
+                    # A finished model.message wins when one arrived; otherwise
+                    # fall back to what the deltas accumulated for that same
+                    # event id. On the live stream it is always the latter.
+                    correlation = dict(model_message_tool_calls)
+                    for event_id, per_index in delta_tool_calls.items():
+                        if event_id not in correlation:
+                            assembled = _assembled_delta_tool_calls(per_index)
+                            if assembled:
+                                correlation[event_id] = assembled
                     refs = event.get("tool_calls")
                     if isinstance(refs, list):
                         for ref in refs:
                             if not isinstance(ref, dict):
                                 continue
                             resolved = _resolve_tool_name(
-                                model_message_tool_calls,
+                                correlation,
                                 ref.get("source_event_id"),
                                 ref.get("id"),
                             )

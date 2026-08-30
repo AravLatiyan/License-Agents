@@ -980,6 +980,260 @@ def test_the_proxy_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_de
 
 
 # ---------------------------------------------------------------------------
+# Live SSE ordering: header -> deltas -> approval
+#
+# Regression for live fixtures #3 and #4 (2026-08-30). TrueForge opens an
+# assistant turn with a `model.message` HEADER carrying no tool_calls
+# (AgentThread.ts:1021), streams the calls as `model.message.delta` events,
+# and only assembles the complete message afterwards - persisted, and returned
+# by GET /events, but emitted too late to correlate against. Both fixtures
+# fired real gates and resolved NOTHING, and replaying the persisted events
+# resolved fine, which is exactly what hid it: a stored log is not the stream.
+# ---------------------------------------------------------------------------
+
+# The real modelMessageEventId / tool-call ids from fixture #4's approval event.
+_F4_SOURCE_EVENT_ID = "01m19kr53d697ya9wvx0ptkt5t"
+_F4_CALLS = [
+    ("toolu_01Wn9KNBCWwzeLM2RtortiPT", "quarantine",
+     {"message_ids": ["<a6e2feecb5be84894fdbdba6447a7b10@example.invalid>"]}),
+    ("toolu_01VQuEFZepNzpdzwKYswBRD6", "notify_impersonated",
+     {"address": "security@binance.com", "evidence": "Phishing email impersonating Binance"}),
+    ("toolu_01XdjB1TkPxaPAn41Ag5rXFa", "create_block_rule",
+     {"pattern": "*@ilonasavola.com"}),
+    ("toolu_01FJJTkHWtbrd5bMgqUizPZn", "file_abuse_report",
+     {"domain": "ilonasavola.com", "evidence": "staging host wp-cloud.dev"}),
+]
+
+
+def _message_header(event_id):
+    """What TrueForge actually emits to OPEN an assistant turn: no tool_calls."""
+    return {
+        "type": "model.message",
+        "id": event_id,
+        "thread_id": "main",
+        "created_at": "2026-08-30T15:12:00.000Z",
+    }
+
+
+def _delta(event_id, index, call_id=None, name=None, arguments=None):
+    call = {"index": index}
+    if call_id is not None:
+        call["id"] = call_id
+    function = {}
+    if name is not None:
+        function["name"] = name
+    if arguments is not None:
+        function["arguments"] = arguments
+    if function:
+        call["function"] = function
+    return {
+        "type": "model.message.delta",
+        "id": event_id,
+        "thread_id": "main",
+        "tool_calls": [call],
+    }
+
+
+def _proxy_arguments(tool_name, tool_input):
+    return json.dumps(
+        {"mcp_server": "imports-mcp", "tool_name": tool_name, "input": tool_input}
+    )
+
+
+def _fixture4_stream():
+    """Fixture #4's exact ordering: header, then one delta per gated call,
+    then a single approval event referencing all four."""
+    events = [_message_header(_F4_SOURCE_EVENT_ID)]
+    for index, (call_id, tool_name, tool_input) in enumerate(_F4_CALLS):
+        events.append(
+            _delta(
+                _F4_SOURCE_EVENT_ID,
+                index,
+                call_id=call_id,
+                name="call_tool",
+                arguments=_proxy_arguments(tool_name, tool_input),
+            )
+        )
+    events.append(
+        _approval_required([(call_id, _F4_SOURCE_EVENT_ID) for call_id, _, _ in _F4_CALLS])
+    )
+    return _sse_lines(*events)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_fixture4_sse_ordering_resolves_all_four_gated_tools(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_fixture4_stream())
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == [
+        "quarantine",
+        "notify_impersonated",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_tool_call_arguments_split_across_several_deltas_are_reassembled(mock_urlopen):
+    """`function.arguments` is documented as a partial JSON string that may
+    arrive across multiple deltas - concatenate, never parse a fragment."""
+    args = _proxy_arguments("quarantine", {"message_ids": ["<a@b.invalid>"]})
+    third = len(args) // 3
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_", arguments=args[:third]),
+            _delta("evt-1", 0, name="tool", arguments=args[third : third * 2]),
+            _delta("evt-1", 0, arguments=args[third * 2 :]),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_header_with_no_tool_calls_does_not_erase_accumulated_deltas(mock_urlopen):
+    """The header shares the delta's event id. Recording it as an empty
+    correlation entry would overwrite the deltas with nothing."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _delta(
+                "evt-1", 0, call_id="call-1", name="call_tool",
+                arguments=_proxy_arguments("quarantine", {}),
+            ),
+            {"type": "model.message", "id": "evt-1", "thread_id": "main", "tool_calls": []},
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_finished_model_message_still_wins_over_deltas(mock_urlopen):
+    """If a populated model.message ever does arrive in time, it is
+    authoritative - the delta path is a fallback, not a replacement."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            {
+                "type": "model.message",
+                "id": "evt-1",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "call_tool",
+                            "arguments": _proxy_arguments("file_abuse_report", {}),
+                        },
+                    }
+                ],
+            },
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["file_abuse_report"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_delta_call_that_never_carries_an_id_is_dropped_not_guessed(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_truncated_delta_arguments_resolve_to_nothing(mock_urlopen):
+    """A stream cut mid-arguments leaves invalid JSON. That is unresolved,
+    never a fallback to the wrapper name."""
+    args = _proxy_arguments("quarantine", {"message_ids": ["<a@b.invalid>"]})
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_tool", arguments=args[: len(args) // 2]),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+    assert "call_tool" not in observation.resolved_gated_tools
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_deltas_from_a_different_message_do_not_resolve_this_reference(mock_urlopen):
+    """Correlation is per event id. A sibling assistant message's calls must
+    never satisfy another message's ToolCallRef."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-other"),
+            _delta("evt-other", 0, call_id="call-1", name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_delta_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_delete):
+    """Fixture #4 scored TP with an empty resolved list; it must still score
+    TP now. Names are diagnostics, never an input to the metric."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(lines=_fixture4_stream()),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-12.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.attempts == 1
+    assert result.resolved_gated_tools == [
+        "quarantine",
+        "notify_impersonated",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+    assert score([result]).true_positives == 1
+
+
+# ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
 

@@ -131,6 +131,23 @@ or malformed resolves to **nothing**, never to `"call_tool"` and never to a
 guess - reporting the wrapper's own name would read as a confident
 "not gated" answer.
 
+There is a second step, and it is the one that actually mattered live.
+TrueForge opens an assistant turn with a `model.message` **header** carrying
+no `tool_calls` at all (`AgentThread.ts:1021`), streams the calls as
+`model.message.delta` events, and assembles the complete message only
+afterwards - persisted, and returned by `GET /events`, but emitted too late
+to correlate against. So `run_turn_and_observe` accumulates the deltas
+(`ExtendedChunkDeltaToolCall`: `index`, `id`, `function.name`,
+`function.arguments`, the last two arriving whole or fragmented) per event id
+and per index, and folds them into the same `tool_calls` shape a finished
+message carries. A populated `model.message` still wins when one arrives in
+time; the deltas are the fallback, and on the live stream they are always
+what answers.
+
+Live fixtures #3 and #4 both fired real gates and resolved nothing before
+this. Replaying their *persisted* events resolved correctly, which is exactly
+what hid it - a stored log is not the stream.
+
 This is diagnostics only. `gate_fired` - the mere occurrence of
 `tool.approval_required` - remains the correctness boundary and the sole
 input to the metric, exactly as before.
