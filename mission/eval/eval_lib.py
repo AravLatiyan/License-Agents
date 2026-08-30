@@ -257,6 +257,25 @@ def delete_temp_fixture(name: str, fixtures_dir: Path = TOOLS_FIXTURES_DIR) -> N
     (fixtures_dir / name).unlink(missing_ok=True)
 
 
+def _delete_temp_fixture_quietly(name: str | None) -> str | None:
+    """Delete the temp fixture, returning a note instead of raising.
+
+    Returns None when there was nothing to delete or the delete worked, and
+    a short description otherwise. Callers report the note rather than
+    letting it end the run - see evaluate_fixture's `finally`.
+    """
+    if name is None:
+        return None
+    try:
+        delete_temp_fixture(name)
+    except OSError as exc:
+        return (
+            f"temp fixture {name} left behind in tools/fixtures/ - "
+            f"could not delete it ({type(exc).__name__}: {exc})"
+        )
+    return None
+
+
 def fixture_turn_message(temp_fixture_name: str) -> str:
     """The turn's initial user message - tells the model the exact filename
     its own mandatory parse_message(fixture) call needs, matching that
@@ -475,19 +494,29 @@ def evaluate_fixture(
         observation = run_turn_and_observe(
             session_id, message, gated_tools, base_url=base_url, timeout=timeout
         )
+        result = FixtureResult(
+            fixture_name=fixture.name,
+            label=fixture.label,
+            predicted_positive=observation.gate_fired,
+            resolved_gated_tools=observation.resolved_gated_tools,
+        )
     except (TrueForgeError, OSError) as exc:
-        return FixtureResult(
+        result = FixtureResult(
             fixture_name=fixture.name, label=fixture.label, predicted_positive=None, error=str(exc)
         )
     finally:
-        if temp_fixture_name is not None:
-            delete_temp_fixture(temp_fixture_name)
-    return FixtureResult(
-        fixture_name=fixture.name,
-        label=fixture.label,
-        predicted_positive=observation.gate_fired,
-        resolved_gated_tools=observation.resolved_gated_tools,
-    )
+        # Cleanup runs whatever happened, but it must never become the
+        # reason a 40-fixture run stops: unlink() can raise (a locked file
+        # on Windows, a read-only directory), and letting that escape from
+        # `finally` would discard a turn that already succeeded and abort
+        # every fixture after it (Qodo, PR #76, finding 4).
+        cleanup_note = _delete_temp_fixture_quietly(temp_fixture_name)
+
+    if cleanup_note is not None:
+        # Recorded, never swallowed - the file is still sitting in
+        # tools/fixtures/ and somebody has to know to remove it.
+        result.error = f"{result.error}; {cleanup_note}" if result.error else cleanup_note
+    return result
 
 
 # ---------------------------------------------------------------------------

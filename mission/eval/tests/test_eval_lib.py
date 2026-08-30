@@ -474,6 +474,58 @@ def test_evaluate_fixture_deletes_the_temp_fixture_even_when_the_turn_fails(
     mock_delete.assert_called_once_with("eval-abc123.eml")
 
 
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.run_turn_and_observe")
+@patch("eval_lib.create_session")
+@patch("eval_lib.write_temp_fixture")
+def test_evaluate_fixture_survives_a_cleanup_failure_and_keeps_the_observation(
+    mock_write, mock_create_session, mock_run_turn, mock_delete
+):
+    """A failed unlink must never abort the run (Qodo, PR #76, finding 4).
+
+    The turn already succeeded here: its observation is the expensive part
+    and is not thrown away because a temp file could not be removed. The
+    failure is reported on the result instead, because the leftover file
+    sits in tools/fixtures/ and somebody has to know to remove it.
+    """
+    from eval_lib import TurnObservation
+
+    mock_write.return_value = "eval-abc123.eml"
+    mock_create_session.return_value = "sess-1"
+    mock_run_turn.return_value = TurnObservation(gate_fired=True, resolved_gated_tools=["quarantine"])
+    mock_delete.side_effect = OSError("file is locked")
+
+    result = evaluate_fixture(
+        _fixture(label="phish"), agent="universal-imports", gated_tools=GATED_TOOLS
+    )
+
+    assert result.predicted_positive is True
+    assert result.resolved_gated_tools == ["quarantine"]
+    assert result.error is not None
+    assert "eval-abc123.eml" in result.error
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.create_session")
+@patch("eval_lib.write_temp_fixture")
+def test_evaluate_fixture_cleanup_failure_does_not_hide_the_turn_failure(
+    mock_write, mock_create_session, mock_delete
+):
+    """Both things went wrong: the caller needs to see the turn error, which
+    is the one that explains predicted_positive being None."""
+    mock_write.return_value = "eval-abc123.eml"
+    mock_create_session.side_effect = TrueForgeError("boom")
+    mock_delete.side_effect = OSError("file is locked")
+
+    result = evaluate_fixture(
+        _fixture(label="phish"), agent="universal-imports", gated_tools=GATED_TOOLS
+    )
+
+    assert result.predicted_positive is None
+    assert "boom" in result.error
+    assert "eval-abc123.eml" in result.error
+
+
 # ---------------------------------------------------------------------------
 # Fixture delivery via tools/fixtures/ - write_temp_fixture, delete_temp_fixture
 # ---------------------------------------------------------------------------
