@@ -313,3 +313,62 @@ def test_extremely_long_pattern_is_refused_not_truncated(db_path: str):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='block_rules'"
         ).fetchall()
     assert tables == [], "a refused pattern must not even open the rule store"
+
+
+# --- the two defects Qodo found on PR #90 -----------------------------------
+
+
+def test_approved_pattern_is_stored_verbatim_never_stripped(db_path: str):
+    """The stored rule must be byte-identical to the approved argument.
+
+    This tool refuses over-long patterns precisely because truncating one
+    would record a rule the human never approved. Stripping whitespace
+    commits the same sin more quietly: " *@evil.example.com" approved at the
+    gate would be durably recorded as the BROADER "*@evil.example.com".
+    Whitespace is used to detect a blank pattern, never to rewrite one.
+    """
+    approved = " *@evil.example.com"
+
+    result = create_block_rule(approved)
+
+    assert result["created"] is True
+    assert result["pattern"] == approved, "the reported pattern must match what was approved"
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT pattern FROM block_rules").fetchall()
+    assert rows == [(approved,)], "the STORED pattern must match what was approved, whitespace included"
+
+
+def test_leading_whitespace_makes_a_genuinely_distinct_rule(db_path: str):
+    """Following from the above: since patterns are stored verbatim, two
+    strings that differ only in whitespace are two different approved rules
+    and must both persist. Collapsing them would mean one human decision
+    silently standing in for another."""
+    create_block_rule("*@evil.example.com")
+    create_block_rule(" *@evil.example.com")
+
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM block_rules").fetchone()[0]
+    assert count == 2
+
+
+def test_lone_surrogate_is_refused_not_raised(db_path: str):
+    """A lone UTF-16 surrogate is a str, non-blank and within the length
+    bound, so it passes every guard — but binding it as SQLite text raises
+    UnicodeEncodeError, which is neither sqlite3.Error nor OSError. Such a
+    string can arrive through a JSON escape, and this tool promises a
+    structured refusal for ANY input rather than a raise."""
+    result = create_block_rule("bad\ud800surrogate")  # must not raise
+
+    assert result["created"] is False
+    assert "refused" in result["note"]
+
+
+def test_the_store_still_works_after_a_surrogate_refusal(db_path: str):
+    """A refused write must leave the store usable — a bad input should cost
+    that one call, not the rest of the mission."""
+    create_block_rule("bad\ud800surrogate")
+
+    result = create_block_rule("*@evil.example.com")
+
+    assert result["created"] is True

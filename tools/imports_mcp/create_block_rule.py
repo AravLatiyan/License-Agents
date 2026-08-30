@@ -96,14 +96,20 @@ def create_block_rule(pattern: str) -> dict[str, Any]:
     if not isinstance(pattern, str):
         return _failure(pattern, "refused: pattern must be a string")
 
-    cleaned = pattern.strip()
-    if not cleaned:
+    # Whitespace is used to DETECT a blank pattern, never to transform what
+    # gets stored. Stripping would durably record a different rule from the
+    # one approved at the gate — " *@evil.example.com" would become the
+    # broader "*@evil.example.com" — which is the exact failure this tool
+    # refuses over-long patterns to avoid, so it must not commit it here
+    # either (Qodo, PR #90). The approved string is stored verbatim.
+    if not pattern.strip():
         return _failure(pattern, "refused: pattern was empty")
-    if len(cleaned) > MAX_PATTERN_LENGTH:
+    if len(pattern) > MAX_PATTERN_LENGTH:
         return _failure(
-            cleaned[:MAX_PATTERN_LENGTH],
+            "",
             f"refused: pattern longer than {MAX_PATTERN_LENGTH} characters",
         )
+    cleaned = pattern
 
     try:
         conn = sqlite3.connect(block_rules_db_path(), timeout=BLOCK_RULES_DB_TIMEOUT_SECONDS)
@@ -132,6 +138,14 @@ def create_block_rule(pattern: str) -> dict[str, Any]:
         return _failure(cleaned, f"refused: could not record the rule ({type(exc).__name__})")
     except OSError as exc:
         return _failure(cleaned, f"refused: could not open the rule store ({type(exc).__name__})")
+    except UnicodeError as exc:
+        # A lone UTF-16 surrogate passes every check above — it is a str, not
+        # blank, not over-length — but binding it as SQLite text raises
+        # UnicodeEncodeError, which is neither sqlite3.Error nor OSError. Such
+        # a string can genuinely arrive through a JSON escape, and this tool
+        # promises a structured refusal for ANY input rather than a raise
+        # (Qodo, PR #90).
+        return _failure("", f"refused: pattern is not storable text ({type(exc).__name__})")
 
     note = (
         f"block rule recorded for {cleaned}"
