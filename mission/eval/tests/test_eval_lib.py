@@ -183,7 +183,7 @@ def test_positive_gated_action_is_detected(mock_urlopen):
 def test_negative_when_turn_completes_with_no_approval_event(mock_urlopen):
     lines = _sse_lines(
         _model_message("msg-1", "domain_intel", "call-1"),  # read-only, never gated
-        {"type": "turn.done"},
+        {"type": "turn.done", "state": {"status": "done"}},
     )
     mock_urlopen.return_value = _FakeResponse(lines=lines)
 
@@ -1234,6 +1234,130 @@ def test_the_delta_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_de
 
 
 # ---------------------------------------------------------------------------
+# Qodo review, PR #99 - four findings, all accepted
+# ---------------------------------------------------------------------------
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_turn_done_with_no_state_is_a_failure_not_a_negative(mock_urlopen):
+    """Finding 1. TurnDoneEvent.state is required by the schema, so a
+    turn.done without one is protocol drift. Accepting it as a completion
+    would recreate the exact silent metric corruption this module fixed."""
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+
+    with pytest.raises(TrueForgeError, match="no readable state.status"):
+        run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},                      # state present but empty
+        {"status": None},        # explicit null
+        {"status": 7},           # wrong type
+        {"status": ""},          # empty string
+        "not-an-object",         # wrong shape entirely
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_malformed_turn_status_is_a_failure_not_a_negative(mock_urlopen, state):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "turn.done", "state": state})
+    )
+
+    with pytest.raises(TrueForgeError, match="no readable state.status"):
+        run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_mission_complete_is_still_allowed_to_be_stateless(mock_urlopen):
+    """The one legitimately stateless terminal event must keep working -
+    tightening turn.done must not break this project's own Layer 2 event."""
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "mission.complete"}))
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status is None
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_failed_session_creation_reports_zero_billed_turns(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    """Finding 2. create_session only POSTs /sessions - no turn, no model
+    call - so a failure there costs nothing and must not be summed as spend."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        "url", 500, "boom", hdrs=None, fp=None  # type: ignore[arg-type]
+    )
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 0, "no turn was ever submitted"
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+def test_a_local_write_failure_reports_zero_billed_turns(mock_write, mock_delete):
+    """Finding 3. A filesystem error before any session exists is not a
+    billed turn; the old max(attempts, 1) floor reported a phantom one."""
+    mock_write.side_effect = OSError("disk full")
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert "disk full" in result.error
+    assert result.attempts == 0
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_successful_fixture_still_reports_one_billed_turn(mock_urlopen):
+    """The counter must still be right in the normal case - moving it after
+    create_session must not make a real turn invisible."""
+    with patch("eval_lib.write_temp_fixture", return_value="eval-x.eml"), patch(
+        "eval_lib.delete_temp_fixture"
+    ):
+        mock_urlopen.side_effect = [
+            _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+            _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+        ]
+        result = evaluate_fixture(
+            _fixture(name="ham-1.eml", label="ham"),
+            agent="universal-imports",
+            gated_tools=GATED_TOOLS,
+        )
+
+    assert result.predicted_positive is False
+    assert result.attempts == 1
+
+
+@pytest.mark.parametrize("budget", [0, -1])
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_nonpositive_retry_budget_is_rejected_before_anything_is_spent(
+    mock_urlopen, mock_write, mock_delete, budget
+):
+    """Finding 4. A caller that configured no attempts must not be charged
+    for one - and must not even have a temp fixture written."""
+    with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+        evaluate_fixture(
+            _fixture(),
+            agent="universal-imports",
+            gated_tools=GATED_TOOLS,
+            max_attempts=budget,
+        )
+
+    assert mock_urlopen.call_count == 0
+    assert mock_write.call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
 
@@ -1340,7 +1464,7 @@ def test_create_session_binds_the_agent_by_nested_name(mock_urlopen):
 
 @patch("eval_lib.urllib.request.urlopen")
 def test_run_turn_posts_to_the_api_v1_turns_path(mock_urlopen):
-    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}}))
 
     run_turn_and_observe(
         "sess-1", "look at eval-x.eml", GATED_TOOLS, base_url="http://localhost:8790"
@@ -1354,7 +1478,7 @@ def test_run_turn_posts_to_the_api_v1_turns_path(mock_urlopen):
 
 @patch("eval_lib.urllib.request.urlopen")
 def test_run_turn_sends_input_as_an_array_of_items(mock_urlopen):
-    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}}))
 
     run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
 
@@ -1569,7 +1693,7 @@ def test_one_fixtures_events_cannot_contaminate_anothers_result(
         _model_message("msg-1", "quarantine", "call-1"),
         _approval_required([("call-1", "msg-1")]),
     )
-    negative_lines = _sse_lines({"type": "turn.done"})
+    negative_lines = _sse_lines({"type": "turn.done", "state": {"status": "done"}})
     session_response = _FakeResponse(body=json.dumps({"data": {"id": "sess-x"}}).encode("utf-8"))
 
     # First fixture: session creation, then a positive turn.

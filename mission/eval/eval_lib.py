@@ -199,6 +199,16 @@ _TURN_FINISHED_EVENT_TYPES = ("turn.done", "mission.complete")
 _TURN_SUCCEEDED_STATUS = "done"
 _TURN_ERROR_STATUS = "error"
 
+# Terminal event types that legitimately carry no `state` at all. Only this
+# project's own Layer 2 `mission.complete` qualifies (contracts/events.ts).
+#
+# TrueForge's raw `turn.done` is NOT in this set: its schema requires `state`,
+# and that state is the discriminated union this module reads. A `turn.done`
+# without a readable status is protocol drift, not a completed turn - accepting
+# it as one would recreate exactly the silent metric corruption this module
+# fixed (Qodo, PR #99, "Missing status scores negative").
+_STATELESS_TERMINAL_EVENT_TYPES = ("mission.complete",)
+
 # Transport-layer failures that mean "this fixture's evaluation could not be
 # completed," never "the model quietly declined to act." HTTPError/URLError
 # alone missed a real class of failure (Qodo, PR #76, "Stream timeouts abort
@@ -604,7 +614,12 @@ def _terminal_status(event: dict[str, Any]) -> str | None:
     if not isinstance(state, dict):
         return None
     status = state.get("status")
-    return status if isinstance(status, str) else None
+    # A blank status is as unreadable as a missing one - it names no state in
+    # the discriminated union, so it must not reach the "finished with status
+    # ''" branch as though it were a real value.
+    if not isinstance(status, str) or not status.strip():
+        return None
+    return status
 
 
 def _is_retryable_turn_error(detail: str) -> bool:
@@ -617,15 +632,28 @@ def _is_retryable_turn_error(detail: str) -> bool:
     return any(marker in lowered for marker in _RETRYABLE_TURN_ERROR_MARKERS)
 
 
-def _raise_if_turn_failed(event: dict[str, Any], session_id: str) -> str | None:
+def _raise_if_turn_failed(event: dict[str, Any], event_type: str, session_id: str) -> str | None:
     """Raises unless the turn genuinely completed. Returns the status seen.
 
     A turn that errored or was cancelled produced no verdict and proposed no
     action - it is a failed evaluation, to be excluded from the metrics via
     FixtureResult.error, never a "no gated action proposed" negative.
+
+    An event type that is documented as stateless (`mission.complete`) is
+    accepted as a completion with no status. Anything else - i.e. `turn.done` -
+    must carry a readable `state.status`, because that discriminator is the
+    only thing separating a completed turn from a crashed one. A missing or
+    malformed one is a failed fixture, not a negative.
     """
+    if event_type in _STATELESS_TERMINAL_EVENT_TYPES:
+        return None
     status = _terminal_status(event)
-    if status is None or status == _TURN_SUCCEEDED_STATUS:
+    if status is None:
+        raise TrueForgeError(
+            f"turn-finished event {event_type!r} for session {session_id} carried no readable "
+            "state.status - the turn's outcome is unknown, so this fixture could not be scored"
+        )
+    if status == _TURN_SUCCEEDED_STATUS:
         return status
     state = event.get("state")
     detail = ""
@@ -755,7 +783,9 @@ def run_turn_and_observe(
                 if event_type in _TURN_FINISHED_EVENT_TYPES:
                     # Raises for an errored/cancelled turn rather than
                     # returning it as a clean negative.
-                    observation.terminal_status = _raise_if_turn_failed(event, session_id)
+                    observation.terminal_status = _raise_if_turn_failed(
+                        event, event_type, session_id
+                    )
                     observation.completed_without_gate = True
                     return observation
     except _TRANSPORT_ERRORS as exc:
@@ -788,9 +818,11 @@ class FixtureResult:
     resolved_gated_tools: list[str] = field(default_factory=list)
     error: str | None = None
     attempts: int = 1
-    """How many turns this fixture actually cost. >1 means a transient
-    transport failure was retried - reported so a run's real spend and its
-    blip rate are both visible, never folded into the metrics."""
+    """How many turns this fixture actually submitted, and therefore what it
+    cost. >1 means a transient transport failure was retried; 0 means it
+    failed before any turn was posted (a local write error, or a session that
+    could not be created) and so was never billed. Reported so a run's real
+    spend and its blip rate are both visible, never folded into the metrics."""
 
 
 def evaluate_fixture(
@@ -829,15 +861,26 @@ def evaluate_fixture(
     error talking to TrueForge itself - is NOT retried: a dropped stream in
     particular may leave a turn still running server-side, and re-submitting
     would double-spend."""
+    if max_attempts < 1:
+        # A caller that configured no attempts must not be charged for one
+        # (Qodo, PR #99, "Nonpositive retry budget ignored"). Rejected before
+        # the temp fixture is written, let alone before a session is opened.
+        raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
     temp_fixture_name: str | None = None
+    # Turns actually submitted, which is what a turn costs money for. Counted
+    # only once a session exists and a turn is about to be posted, so a failed
+    # session POST or a local filesystem error reports zero spend rather than a
+    # phantom billed turn (Qodo, PR #99, findings 2 and 3).
     attempts = 0
     try:
         temp_fixture_name = write_temp_fixture(fixture.raw_email)
         message = fixture_turn_message(temp_fixture_name)
         while True:
-            attempts += 1
             try:
+                # create_session only POSTs /sessions - no turn, no model call,
+                # so it is deliberately outside the counter.
                 session_id = create_session(agent, base_url=base_url, timeout=timeout)
+                attempts += 1
                 observation = run_turn_and_observe(
                     session_id, message, gated_tools, base_url=base_url, timeout=timeout
                 )
@@ -868,7 +911,9 @@ def evaluate_fixture(
             label=fixture.label,
             predicted_positive=None,
             error=str(exc),
-            attempts=max(attempts, 1),
+            # Never floored to 1: a failure before any turn was submitted
+            # genuinely cost zero turns.
+            attempts=attempts,
         )
     finally:
         # Cleanup runs whatever happened, but it must never become the
