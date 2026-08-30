@@ -586,7 +586,7 @@ CLAUDE.md      the rules Claude Code auto-reads
 - **T-064** Qodo PR triage — daily, nothing merges unreviewed
 - **T-067** Demo video — **4 hours on Day 5**, rough cut Day 4
 - **T-068** Blog post (Field Report prize — one writer)
-- **T-069** Day 4 cross-brief — each owner explains their area to the other three (rules 12 & 13)
+> Note (2026-08-30, coordinator pass): **T-069 removed from this list — pulled into §2 NEXT UP** (Qodo, PR #93). A task listed in both places gets offered again after it is finished, which is how T-024 and T-050/T-051 ended up duplicated earlier (§2's own notes).
 - **T-070** ⚠️ Secret sweep — repo half done (§4, 2026-08-30: no committed secrets found, checked directly). **Video half still open** — "no tokens visible in the video" can't be checked until T-067 records one
 - **T-071** Daily social posts tagging WeMakeDevs + TrueFoundry
 
