@@ -412,35 +412,133 @@ test("tool.response for a gated action -> mission.action_executed, gate_index ti
   });
 });
 
-test("a gated-action result without a string .note is dropped, not reported as executed", async (t) => {
-  // Qodo, PR #75 finding #2: {} (or any payload without a string `note`)
-  // used to still produce mission.action_executed with result_summary: "" -
-  // falsely claiming the action ran. Every one of the four gated tools
-  // shares `note` across success and failure, so its absence means the
-  // payload isn't a real tool result at all.
-  await t.test("no note field at all", () => {
+// A gated call is the one place where silence is the WORST answer.
+//
+// Qodo, PR #75 finding #2 established the first half of this: a payload
+// without a string `note` must never be reported as a plain success, because
+// `result_summary: ""` reads as "the irreversible action ran, and said
+// nothing". That fix chose silence - return [] - which T-074 then found to be
+// the other half of the same bug. Once a human has granted the licence the
+// cockpit's gate sits at "Allowed - executing..." (cockpit/src/ApprovalPanel.tsx
+// :161, and missionPlan.ts:354's `resolved === "allow"` branch) until a
+// terminal mission.action_executed arrives for that gate index. Nothing else
+// ever clears it: mission.approval_resolved is already past, and a tool error
+// does not end the turn. So a dropped result leaves the operator watching a
+// spinner for an action that already failed - the failure never reaches the
+// person who is accountable for it, which is the one outcome this project
+// exists to prevent.
+//
+// Both halves therefore have to hold at once: never claim success, and always
+// terminate the gate. The tests below assert exactly that pair.
+test("a gated-action result without a string .note is reported as a FAILURE, never as success and never dropped", async (t) => {
+  // The realistic producer of this, verified 2026-08-30: three of the four
+  // gated wrappers in tools/imports_mcp/server.py validate their arguments by
+  // raising ToolError (quarantine server.py:292-301, notify_impersonated
+  // :319-330, file_abuse_report :351-358). That raise happens INSIDE the tool
+  // call, i.e. after TrueForge's approval gate has already been granted, so
+  // the licence has been spent and the tool still did not run. Whatever that
+  // error looks like on the wire, it is not `{"note": "..."}`.
+  const failureSummary = (result: MissionEvent[]): string => {
+    assert.equal(result.length, 1, "a gated call that was allowed must always produce a terminal event");
+    const event = result[0] as { type: string; gate_index: number; action: string; result_summary: string };
+    assert.equal(event.type, "mission.action_executed");
+    assert.equal(event.gate_index, 1);
+    // The summary must read as a failure to a human. This is the whole point:
+    // the cockpit prefixes it with the fixed words "Executed: ", so the text
+    // itself is what stops an operator believing an irreversible action ran.
+    // UNCONFIRMED, never "FAILED" (Qodo, PR #96): an unreadable reply can
+    // follow a side effect that really happened, and these actions are not
+    // idempotent - telling an operator a send failed invites a second send
+    // to a real person.
+    assert.match(
+      event.result_summary,
+      /^UNCONFIRMED/,
+      `summary must announce an unknown outcome, got: ${event.result_summary}`,
+    );
+    assert.doesNotMatch(
+      event.result_summary,
+      /FAILED/,
+      `summary must not claim failure it cannot prove, got: ${event.result_summary}`,
+    );
+    return event.result_summary;
+  };
+
+  const gatedTranslator = () => {
     const translator = createTranslator({ missionId: MISSION_ID });
     translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
     translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
-    const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ ok: true })));
-    assert.deepEqual(result, []);
+    return translator;
+  };
+
+  await t.test("no note field at all", () => {
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ ok: true }))));
+    assert.match(summary, /create_block_rule/, "the summary names the action that failed");
+    assert.match(summary, /\{"ok":true\}/, "the summary quotes what the tool actually replied");
   });
 
   await t.test("note field present but not a string", () => {
-    const translator = createTranslator({ missionId: MISSION_ID });
-    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
-    translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
-    const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: 12345 })));
-    assert.deepEqual(result, []);
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: 12345 }))));
+    assert.match(summary, /\{"note":12345\}/);
   });
 
-  await t.test("a genuine string note still produces the event", () => {
-    const translator = createTranslator({ missionId: MISSION_ID });
-    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "create_block_rule", { pattern: "*@evil.example.com" })]));
-    translator.push(approvalRequired("appr-1", "main", [ref("call-1", "evt-1")]));
-    const result = translator.push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: "rule created" })));
-    assert.equal((result[0] as { result_summary: string }).result_summary, "rule created");
+  await t.test("content that is not JSON at all - the shape an MCP ToolError arrives in", () => {
+    // The likeliest real failure of the three raising wrappers. A tool error
+    // is a message, not a JSON document, so it fails JSON.parse - which is
+    // why parse failure cannot mean "drop it" for a gated call the way it
+    // does for every read-only tool.
+    const raw = "Error executing tool quarantine: message_ids must be a non-empty list";
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", raw)));
+    assert.match(summary, /message_ids must be a non-empty list/, "the operator sees the actual reason");
   });
+
+  await t.test("a JSON payload that is not an object", () => {
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", '"just a string"')));
+    assert.match(summary, /just a string/);
+  });
+
+  await t.test("an empty response body still terminates the gate", () => {
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", "")));
+    assert.ok(summary.length > 0, "a summary is still written when there is nothing to quote");
+  });
+
+  await t.test("an unreadably long error is truncated, not passed through whole", () => {
+    // Rule 2880706 caps tool responses at ~2KB, but that is a rule our own
+    // tools follow, not one the wire enforces - and this string is rendered
+    // straight into a licence-gate panel. The summary stays a summary.
+    const summary = failureSummary(gatedTranslator().push(toolResponse("evt-2", "main", "call-1", "x".repeat(5000))));
+    assert.ok(summary.length < 500, `summary must stay short, was ${summary.length} chars`);
+    assert.match(summary, /…$/, "truncation is marked, so nobody reads a cut-off reason as the whole reason");
+  });
+
+  await t.test("a genuine string note still produces the event, unchanged", () => {
+    const result = gatedTranslator().push(toolResponse("evt-2", "main", "call-1", JSON.stringify({ note: "rule created" })));
+    assert.deepEqual(result[0], {
+      type: "mission.action_executed",
+      mission_id: MISSION_ID,
+      gate_index: 1,
+      action: "create_block_rule",
+      result_summary: "rule created",
+    });
+  });
+
+  await t.test("a failed result for a call that never became a licence gate is still dropped", () => {
+    // No approval_required was ever seen for this call, so there is no gate
+    // index to attach the failure to and no stuck panel to clear. Inventing
+    // one would put an outcome on a gate the human was never shown.
+    const translator = createTranslator({ missionId: MISSION_ID });
+    translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "quarantine", { message_ids: [] })]));
+    assert.deepEqual(translator.push(toolResponse("evt-2", "main", "call-1", "Error executing tool quarantine")), []);
+  });
+});
+
+test("an unreadable result from a NON-gated tool is still dropped, not turned into a failure event", () => {
+  // The new failure path is deliberately narrow. A read-only tool that
+  // returns nonsense is "not determined", which contracts/events.ts and this
+  // file both represent as absence - there is no gate waiting on it, and no
+  // human decision it could misreport.
+  const translator = createTranslator({ missionId: MISSION_ID });
+  translator.push(modelMessage("evt-1", "main", [toolCall("call-1", "domain_intel", { domain: "evil.example.com" })]));
+  assert.deepEqual(translator.push(toolResponse("evt-2", "main", "call-1", "Error executing tool domain_intel")), []);
 });
 
 test("tool.approval_required missing id/created_at/thread_id is dropped entirely (Qodo, PR #75 finding #1)", () => {
