@@ -1,40 +1,238 @@
+/* ---------------------------------------------------------------------------
+   Design tokens. One small, restrained palette: ink/muted grays for
+   structure and text, plus the three verdict colors this product actually
+   needs (danger/warn/safe) — no decorative brand hue, no gradient.
+   Deliberately light-only as of the Mailpit-drawer redesign (§8,
+   2026-08-30): the source design (A2-side-drawer-light.html) is fixed to
+   light, and the previous `prefers-color-scheme: dark` auto-switch made
+   this build look nothing like it on a dark-OS machine — disclosed
+   trade-off, not an oversight. The dark palette values are recoverable
+   from git history if a manual light/dark toggle is ever wanted instead of
+   following the OS.
+--------------------------------------------------------------------------- */
 :root {
-  color-scheme: light dark;
-  font: 16px/1.5 system-ui, sans-serif;
+  color-scheme: light;
+
+  --ink: #1a1c20;
+  --ink-muted: #5c6068;
+  --ink-faint: #8b8f96;
+  --surface: #ffffff;
+  --surface-sunken: #f6f5f2;
+  --border: #e5e2dc;
+  --border-strong: #d2cec5;
+
+  --danger: #a8291f;
+  --warn: #8a5a00;
+  --safe: #1e6b48;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  --font-sans: -apple-system, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
   margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: 15px/1.55 var(--font-sans);
 }
 
+h1,
+h2,
+h3 {
+  font-family: inherit;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------------------
+   Page shell — a full-height app, not a padded document. Mailpit's own web
+   UI is the frontend now (mailpit-topbar below); Cockpit's role shrank to
+   the inbox, the reading pane and the investigation drawer inside it.
+--------------------------------------------------------------------------- */
 .cockpit {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 24px 16px 64px;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Mailpit's own top bar — brand, search, mailbox-level actions. Presentation
+   only (search/Tags/Mark all read/Delete all are plain, non-interactive
+   markup, same choice the source design made): this cockpit talks to
+   Mailpit's message-list and message-detail endpoints only, never its
+   search or mutation ones, so nothing here should look clickable that
+   isn't (§8, 2026-08-30 UI-pivot note). */
+.mailpit-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+  flex: 0 0 auto;
+}
+
+.mailpit-topbar__brand {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-size: 0.95rem;
+}
+
+.mailpit-topbar__search {
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  width: 280px;
+}
+.mailpit-topbar__search::placeholder {
+  color: var(--ink-faint);
+}
+.mailpit-topbar__search:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.mailpit-topbar__spacer {
+  flex: 1;
+}
+
+.mailpit-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.mailpit-topbar__actions button {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  color: inherit;
+}
+.mailpit-topbar__actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.mailpit-topbar__actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mailpit-topbar__tags {
+  /* `inline-block`, not the default inline: an inline positioned element is
+     an unreliable containing block for an absolutely-positioned child
+     across browsers (the dropdown below drifted from the button in Safari
+     specifically) - inline-block is the same visual shape without that gap. */
+  position: relative;
+  display: inline-block;
+}
+
+.mailpit-topbar__tags-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 20;
+}
+
+/* A small pointer connecting the menu back to the button it belongs to -
+   the "irregular"/floating look was this menu having no visual link to
+   its trigger. */
+.mailpit-topbar__tags-menu::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 14px;
+  width: 9px;
+  height: 9px;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  border-top: 1px solid var(--border-strong);
+  transform: rotate(45deg);
+}
+
+.mailpit-topbar__tags-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+}
+
+.mailpit-topbar__tags-menu button.mailpit-topbar__tag--active {
+  background: var(--surface-sunken);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mailpit-topbar__tags-empty {
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
 }
 
 .cockpit__status {
-  opacity: 0.7;
-  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
 }
 
-/* T-039: which source is feeding the app. Worth showing rather than hiding —
-   a judge watching the demo should be able to tell a real TrueForge run from
-   fixture playback at a glance, and so should we while debugging. */
+/* T-039: which source is feeding the app. A quiet label, not a badge — the
+   distinction matters (fixture vs. a real TrueForge run) but doesn't need
+   to compete visually with anything else on the page. */
 .cockpit__source {
-  display: inline-block;
-  padding: 1px 8px;
-  margin-right: 6px;
-  border: 1px solid currentColor;
-  border-radius: 10px;
-  font-size: 0.75em;
+  color: var(--ink-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+}
+.cockpit__source::after {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-left: 8px;
+  vertical-align: middle;
 }
 
-/* Visually hidden but still reachable by assistive tech - standard pattern,
-   not `display: none`/`visibility: hidden` (those remove it from the
-   accessibility tree too). */
+/* Visually hidden but still reachable by assistive tech. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -47,48 +245,36 @@ body {
   border: 0;
 }
 
-/* Shared panel chrome (T-044) — every top-level section on the page uses
-   the same heading treatment and vertical rhythm. Consolidated from what
-   were five separate copies of the same two rules (one per panel, added
-   task by task) into one place each, so a future change can't apply to
-   four of five panels and miss the fifth the way `.evidence-lane__empty`'s
-   opacity drifted below (Qodo never had a reason to catch it - nothing
-   compared the five panels against each other). */
-.evidence-lanes,
-.detonation-panel,
-.verdict-panel,
-.approval-panel,
-.mission-view,
-.spoken-verdict {
-  margin: 16px 0;
-}
-
+/* ---------------------------------------------------------------------------
+   Shared: section labels, buttons
+--------------------------------------------------------------------------- */
 .detonation-panel h2,
 .verdict-panel h2,
 .approval-panel h2,
 .mission-view h2,
-.spoken-verdict h2 {
-  font-size: 0.85rem;
+.spoken-verdict h2,
+.mission-panel__findings h3,
+.mission-panel__actions h3 {
+  font-size: 0.72rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin: 0 0 8px;
+  letter-spacing: 0.07em;
+  color: var(--ink-muted);
+  margin: 0 0 10px;
 }
 
-/* Interactive affordance (T-044) — the two button-bearing panels
-   (ApprovalPanel, SpokenVerdict) had no hover/focus-visible feedback at
-   all, and disabled state used two different cursors (`not-allowed` vs
-   `default`) for the same meaning. One rule covers every button under
-   `.cockpit`, present and future, rather than repeating per panel. */
 .cockpit button {
   cursor: pointer;
+  font: inherit;
+  color: inherit;
 }
 
 .cockpit button:hover:not(:disabled) {
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  background: color-mix(in srgb, currentColor 7%, transparent);
 }
 
 .cockpit button:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 
@@ -96,10 +282,33 @@ body {
   cursor: not-allowed;
 }
 
-/* Mission view — the plan tree (T-051). One top-level <li> per §10 stage;
-   each stage's own children (evidence lanes, licence gates) are a nested
-   <ol> of the same node markup, one level indented. */
+/* A small, quiet secondary button — used for Deny, "back to inbox", the
+   details toggle's neighbors. Outline only, never filled. */
+.btn-quiet {
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+}
 
+/* A primary action — used once, for Approve, so the one affirmative click in
+   a licence gate is visually unambiguous. Filled with ink, not a brand
+   color: this app has no brand hue to spend on a button. */
+.btn-primary {
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 88%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+   Mission plan tree (T-051) — inside "view full investigation"
+--------------------------------------------------------------------------- */
 .plan-tree {
   list-style: none;
   margin: 0;
@@ -110,28 +319,29 @@ body {
 }
 
 .plan-node {
-  border-left: 2px solid color-mix(in srgb, currentColor 15%, transparent);
+  border-left: 2px solid var(--border);
   padding: 2px 0 2px 14px;
 }
 
 .plan-node__status {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   margin-right: 8px;
-  background: color-mix(in srgb, currentColor 25%, transparent);
+  background: var(--border-strong);
 }
 
 .plan-node__label {
   font-weight: 600;
+  font-size: 0.92rem;
 }
 
 .plan-node__detail {
   display: block;
-  margin: 2px 0 0 16px;
-  font-size: 0.9rem;
-  opacity: 0.75;
+  margin: 2px 0 0 15px;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
 }
 
 .plan-node__children {
@@ -143,44 +353,39 @@ body {
   gap: 4px;
 }
 
-/* pending: dim throughout - nothing has happened for this node yet */
 .plan-node--pending {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
-/* active: the stage currently in progress - the "lighting up" beat (§17) */
 .plan-node--active {
-  border-left-color: orange;
+  border-left-color: var(--warn);
 }
 .plan-node--active > .plan-node__status {
-  background: orange;
+  background: var(--warn);
 }
 
-/* done: finished, stays visible so the tree reads as a history too */
 .plan-node--done {
-  border-left-color: color-mix(in srgb, seagreen 60%, transparent);
+  border-left-color: color-mix(in srgb, var(--safe) 55%, transparent);
 }
 .plan-node--done > .plan-node__status {
-  background: seagreen;
+  background: var(--safe);
 }
 
-/* denied: a gate a human rejected - deliberately not styled like "done",
-   §17's demo beat calls this out as the shot that proves the gate is real */
 .plan-node--denied {
-  border-left-color: crimson;
+  border-left-color: var(--danger);
 }
 .plan-node--denied > .plan-node__status {
-  background: crimson;
+  background: var(--danger);
 }
 .plan-node--denied > .plan-node__detail {
   opacity: 1;
   font-weight: 600;
-  color: crimson;
+  color: var(--danger);
 }
 
-/* Evidence lanes (T-052) — the three subagents side by side, §17's
-   "three evidence lanes light up in parallel" beat. Same pending/active/
-   done language as the plan tree, reused via the shared status classes. */
+/* ---------------------------------------------------------------------------
+   Evidence lanes (T-052) — inside "view full investigation"
+--------------------------------------------------------------------------- */
 .evidence-lanes {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -194,26 +399,25 @@ body {
 }
 
 .evidence-lane {
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  border-radius: 8px;
-  padding: 10px 12px;
-  transition: opacity 0.2s, border-color 0.2s;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 13px;
+  transition: opacity 0.15s;
 }
 
 .evidence-lane__header h3 {
-  margin: 0 0 6px;
-  font-size: 0.85rem;
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
 }
 
 .evidence-lane__empty {
   margin: 0;
-  /* Matches every other panel's "waiting" placeholder opacity (0.45) -
-     was 0.6, the one outlier, unnoticed because nothing compared the
-     panels against each other (T-044). */
-  opacity: 0.45;
-  font-size: 0.9rem;
+  opacity: 0.5;
+  font-size: 0.85rem;
 }
 
 .evidence-lane__items {
@@ -224,18 +428,20 @@ body {
 }
 
 .evidence-item {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .evidence-item__title {
   margin: 0 0 4px;
   font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
   word-break: break-word;
 }
 
 .evidence-item dt {
-  opacity: 0.6;
-  font-size: 0.75rem;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
   margin-top: 4px;
 }
 
@@ -245,24 +451,26 @@ body {
 }
 
 .evidence-lane--pending {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .evidence-lane--active {
-  border-color: orange;
+  border-color: var(--warn);
 }
 
 .evidence-lane--done {
-  border-color: color-mix(in srgb, seagreen 60%, transparent);
+  border-color: color-mix(in srgb, var(--safe) 45%, var(--border));
 }
 
-/* Detonation panel (T-053) */
+/* ---------------------------------------------------------------------------
+   Detonation panel (T-053) — inside "view full investigation"
+--------------------------------------------------------------------------- */
 .detonation-panel__empty {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .detonation-result--error .detonation-result__error {
-  color: crimson;
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -272,8 +480,9 @@ body {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 0.9rem;
+  gap: 3px;
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
 }
 
 .redirect-chain__hop {
@@ -282,7 +491,7 @@ body {
 }
 
 .redirect-chain__status {
-  opacity: 0.6;
+  color: var(--ink-faint);
   min-width: 2.2em;
 }
 
@@ -304,99 +513,92 @@ body {
 }
 
 .detonation-form {
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .detonation-form__action {
   margin: 0;
   font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
   word-break: break-all;
 }
 
 .detonation-form__note {
   margin: 4px 0 0;
-  opacity: 0.75;
+  color: var(--ink-muted);
 }
 
 .detonation-form--dangerous {
-  border-color: crimson;
+  border-color: var(--danger);
 }
 
 .detonation-form__warning {
   margin: 4px 0 0;
-  color: crimson;
+  color: var(--danger);
   font-weight: 600;
 }
 
 .detonation-screenshot {
   margin: 0 0 10px;
-  font-size: 0.9rem;
-  opacity: 0.75;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
 }
 
 .detonation-result__summary {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
-/* Verdict panel (T-054) - the demo's plain-language judgment moment (§17,
-   1:25-1:50), the most visually prominent panel: bigger type than
-   everything else, color-coded by verdict. */
+/* ---------------------------------------------------------------------------
+   Legacy full-page verdict/approval panels — kept for the files' own sake
+   (not currently rendered; MissionContextPanel supersedes both) but styled
+   from the same tokens so nothing looks orphaned if they're ever used again.
+--------------------------------------------------------------------------- */
 .verdict-panel__empty {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .verdict {
-  border: 2px solid;
-  border-radius: 8px;
-  padding: 14px 16px;
+  border-left: 3px solid var(--border-strong);
+  padding: 12px 16px;
 }
 
 .verdict__label {
   margin: 0 0 6px;
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   font-weight: 700;
-  letter-spacing: 0.02em;
 }
 
 .verdict__summary {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1rem;
   line-height: 1.5;
 }
 
 .verdict--malicious {
-  border-color: crimson;
+  border-left-color: var(--danger);
 }
 .verdict--malicious .verdict__label {
-  color: crimson;
+  color: var(--danger);
 }
 
 .verdict--suspicious {
-  border-color: orange;
+  border-left-color: var(--warn);
 }
 .verdict--suspicious .verdict__label {
-  /* plain `orange` text is ~1.97:1 against white - fails WCAG's 3:1 minimum
-     even for this large bold label (Qodo, PR #43 finding #1). #b45309
-     measures ~5:1 on white and ~4.2:1 on black, clearing the bar in both
-     the light and dark halves of this page's `color-scheme: light dark`. */
-  color: #b45309;
+  color: var(--warn);
 }
 
 .verdict--legitimate {
-  border-color: seagreen;
+  border-left-color: var(--safe);
 }
 .verdict--legitimate .verdict__label {
-  color: seagreen;
+  color: var(--safe);
 }
 
-/* Approval panel (T-036) — LICENCE REQUIRED, §17 1:50-2:20. Four sequential
-   per-tool-call gates (§6, 2026-08-24), not one modal — each card mirrors
-   TrueForge's own native approval UI (literal JSON request) in this app's
-   styling. Presentation only: Allow/Deny render disabled, see the panel's
-   own header comment for why (§8's undecided translation layer). */
 .approval-gates {
   list-style: none;
   margin: 0;
@@ -407,8 +609,8 @@ body {
 }
 
 .approval-gate {
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 10px 12px;
 }
 
@@ -419,8 +621,8 @@ body {
 }
 
 .approval-gate__index {
-  font-size: 0.75rem;
-  opacity: 0.6;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
 }
 
 .approval-gate__title {
@@ -430,19 +632,19 @@ body {
 .approval-gate__banner {
   margin: 8px 0 4px;
   font-weight: 700;
+  font-size: 0.75rem;
   letter-spacing: 0.03em;
-  /* plain `orange` text is ~1.97:1 against white - the same WCAG contrast
-     failure already fixed for the suspicious-verdict label (PR #43) with
-     #b45309, ~5:1/~4.2:1 on white/black (Qodo, PR #52 finding #1). */
-  color: #b45309;
+  text-transform: uppercase;
+  color: var(--warn);
 }
 
 .approval-gate__request {
   margin: 0 0 8px;
   padding: 8px 10px;
-  border-radius: 6px;
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
   overflow-x: auto;
   white-space: pre;
 }
@@ -456,17 +658,16 @@ body {
 
 .approval-gate__actions button {
   padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
   background: transparent;
-  font: inherit;
   opacity: 0.6;
 }
 
 .approval-gate__note {
   margin: 0;
-  font-size: 0.8rem;
-  opacity: 0.6;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
 }
 
 .approval-gate__outcome {
@@ -474,50 +675,55 @@ body {
 }
 
 .approval-gate__outcome--empty {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .approval-gate--pending {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .approval-gate--requested {
-  border-color: orange;
+  border-color: var(--warn);
 }
 
 .approval-gate--allowed {
-  border-color: color-mix(in srgb, seagreen 60%, transparent);
+  border-color: color-mix(in srgb, var(--safe) 55%, var(--border));
 }
 
 .approval-gate--denied {
-  border-color: crimson;
+  border-color: var(--danger);
 }
 .approval-gate--denied .approval-gate__outcome {
-  color: crimson;
+  color: var(--danger);
   font-weight: 600;
 }
 
 .approval-gate--executed {
-  border-color: seagreen;
+  border-color: var(--safe);
 }
 
-/* Spoken verdict (T-043) — the demo's closing beat (§17, 2:40-3:00). */
+/* Spoken verdict (T-043) — the demo's closing beat, shown inline once
+   mission.complete arrives. */
+.spoken-verdict {
+  margin-top: 16px;
+}
+
 .spoken-verdict__empty {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
 .spoken-verdict__text {
-  font-size: 1.1rem;
+  font-size: 1rem;
   font-style: italic;
+  color: var(--ink-muted);
   margin: 0 0 10px;
 }
 
 .spoken-verdict button {
-  padding: 8px 18px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  padding: 7px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
   background: transparent;
-  font: inherit;
 }
 
 .spoken-verdict button:disabled {
@@ -525,6 +731,764 @@ body {
 }
 
 .spoken-verdict__unsupported {
-  opacity: 0.6;
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Inbox + reading pane + investigation drawer — three flex siblings filling
+   the remaining height below the top bar/status line. The drawer only
+   exists in the DOM once an investigated message is both selected and
+   open — there is nothing to style for a "closed" state because there is
+   no persistent dashboard, same reasoning the previous single-panel layout
+   already used.
+--------------------------------------------------------------------------- */
+.cockpit__layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
+  .cockpit__layout {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+}
+
+.inbox {
+  flex: 0 0 268px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-sunken);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 760px) {
+  .inbox {
+    flex: 0 0 auto;
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.inbox__count {
+  margin: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-faint);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+
+.inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.inbox__empty {
+  margin: 0;
+  padding: 20px 16px;
+  color: var(--ink-faint);
   font-size: 0.9rem;
+}
+
+.inbox-row + .inbox-row {
+  border-top: 1px solid var(--border);
+}
+
+.inbox-row__button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 10px 12px 10px 9px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+/* A left rail, not a full-row wash — the same quiet "this one is active"
+   language most real mail clients use, and it reads clearly next to the
+   verdict color bar the drawer itself uses. */
+.inbox-row--selected .inbox-row__button,
+.inbox-row__button[aria-pressed="true"] {
+  border-left-color: var(--ink);
+  background: var(--surface);
+}
+
+.inbox-row__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+}
+
+.inbox-row__sender {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+/* Real Mailpit read/unread state (mailpitSource.ts's `read` field) - the
+   one visible effect "Mark all read" has, since this app renders no other
+   per-message unread indicator. */
+.inbox-row--unread .inbox-row__sender {
+  font-weight: 700;
+}
+.inbox-row--unread .inbox-row__subject {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.inbox-row--selected .inbox-row__sender,
+.inbox-row__button[aria-pressed="true"] .inbox-row__sender {
+  font-weight: 700;
+}
+
+.inbox-row__time {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.inbox-row__subject {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+
+.inbox-row--selected .inbox-row__subject,
+.inbox-row__button[aria-pressed="true"] .inbox-row__subject {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.inbox-row__snippet {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.inbox-row__meta {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Plain text labels with a middot separator, not pills — the tag is real
+   Mailpit data (or "Analysed"), not a decorative chip. */
+.inbox-row__tag,
+.inbox-row__flag {
+  display: inline-block;
+}
+.inbox-row__tag + .inbox-row__tag::before,
+.inbox-row__tag + .inbox-row__flag::before {
+  content: "·";
+  margin: 0 6px;
+}
+
+/* ---------------------------------------------------------------------------
+   Reading pane — Mailpit's own message view. The banner is the one injected
+   element; the header grid, tab bar and body below it render real fetched
+   Mailpit content (mailpitSource.ts's fetchMailpitMessage/Headers/Raw).
+--------------------------------------------------------------------------- */
+.reading-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.reading-pane--empty {
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-faint);
+  font-size: 0.9rem;
+}
+
+.reading-pane__banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+  border-left: 3px solid var(--ink-faint);
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+}
+
+.reading-pane__banner--malicious {
+  border-left-color: var(--danger);
+}
+.reading-pane__banner--suspicious {
+  border-left-color: var(--warn);
+}
+.reading-pane__banner--legitimate {
+  border-left-color: var(--safe);
+}
+
+.reading-pane__banner-spacer {
+  flex: 1;
+}
+
+.reading-pane__banner-action {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+.reading-pane__banner-action:hover {
+  color: var(--ink);
+}
+
+.reading-pane__banner-meta {
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+.reading-pane__header {
+  padding: 14px 18px 0;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.reading-pane__subject {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+
+.reading-pane__fields {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 2px 10px;
+  font-size: 0.78rem;
+}
+
+.reading-pane__field-label {
+  color: var(--ink-faint);
+}
+
+.reading-pane__addr {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+  word-break: break-word;
+}
+
+.reading-pane__tabs {
+  margin-top: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.reading-pane__tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 0 0 6px;
+  font: inherit;
+  color: inherit;
+}
+
+.reading-pane__tab:hover:not(.reading-pane__tab--active) {
+  color: var(--ink);
+}
+
+.reading-pane__tab--active {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--ink);
+}
+
+.reading-pane__tabs-spacer {
+  flex: 1;
+}
+
+.reading-pane__meta {
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.reading-pane__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+}
+
+.reading-pane__iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  border: 0;
+  background: var(--surface);
+}
+
+.reading-pane__pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.reading-pane__unavailable {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 0.88rem;
+}
+
+.reading-pane__headers {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  font-size: 0.8rem;
+}
+.reading-pane__header-row {
+  display: contents;
+}
+.reading-pane__headers dt {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+.reading-pane__headers dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+   Investigation drawer — docked on the reading pane's right edge, above it
+   (box-shadow, not a border) rather than a third flex-equal column, the
+   same "overlay, not a peer panel" language the source design used.
+--------------------------------------------------------------------------- */
+.investigation-drawer {
+  flex: 0 0 392px;
+  border-left: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: -14px 0 28px rgba(0, 0, 0, 0.16);
+}
+
+@media (max-width: 760px) {
+  .investigation-drawer {
+    flex: 0 0 auto;
+    box-shadow: none;
+  }
+}
+
+.investigation-drawer__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.investigation-drawer__title {
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 700;
+}
+
+.investigation-drawer__spacer {
+  flex: 1;
+}
+
+.investigation-drawer__id {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+
+.investigation-drawer__dismiss {
+  border: 0;
+  background: transparent;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--ink-muted);
+}
+.investigation-drawer__dismiss:hover {
+  color: var(--ink);
+}
+
+.investigation-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 13px 14px;
+}
+
+.investigation-drawer__footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mission-panel__actions-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mission-panel__actions-count {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------------------
+   The contextual panel. `role="dialog" aria-modal="false"` (component) —
+   a page region tied to the current selection, not a modal.
+--------------------------------------------------------------------------- */
+.mission-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 22px 24px;
+}
+
+.mission-panel--unavailable {
+  color: var(--ink-muted);
+}
+
+.mission-panel--unavailable button {
+  margin-top: 10px;
+}
+
+.mission-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 14px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mission-panel__sender {
+  font-weight: 600;
+  font-size: 1.02rem;
+  margin: 0;
+}
+
+.mission-panel__address {
+  margin: 2px 0 0;
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+  color: var(--ink-faint);
+}
+
+.mission-panel__subject {
+  margin: 6px 0 0;
+  font-size: 0.92rem;
+  color: var(--ink-muted);
+}
+
+.mission-panel__dismiss {
+  border: 0;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-faint);
+}
+
+.mission-panel__dismiss:hover {
+  color: var(--ink);
+}
+
+.mission-panel__investigating,
+.mission-panel__failed {
+  margin: 0 0 16px;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+.mission-panel__failed {
+  color: var(--danger);
+}
+
+/* Verdict: a color bar, not a filled/bordered box — the color already
+   carries the meaning, so it doesn't need a background wash competing with
+   the text on top of it. */
+.mission-panel__verdict {
+  border-left: 3px solid var(--border-strong);
+  padding: 2px 0 2px 14px;
+  margin-bottom: 20px;
+}
+
+.mission-panel__verdict--malicious {
+  border-left-color: var(--danger);
+}
+.mission-panel__verdict--suspicious {
+  border-left-color: var(--warn);
+}
+.mission-panel__verdict--legitimate {
+  border-left-color: var(--safe);
+}
+
+.mission-panel__verdict-label {
+  margin: 0 0 3px;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+}
+.mission-panel__verdict--malicious .mission-panel__verdict-label {
+  color: var(--danger);
+}
+.mission-panel__verdict--suspicious .mission-panel__verdict-label {
+  color: var(--warn);
+}
+.mission-panel__verdict--legitimate .mission-panel__verdict-label {
+  color: var(--safe);
+}
+
+.mission-panel__verdict-summary {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.55;
+}
+
+.mission-panel__findings,
+.mission-panel__actions {
+  margin: 0 0 20px;
+}
+
+.mission-panel__findings ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mission-panel__findings li {
+  padding-left: 14px;
+  position: relative;
+  font-size: 0.92rem;
+}
+.mission-panel__findings li::before {
+  content: "–";
+  position: absolute;
+  left: 0;
+  color: var(--ink-faint);
+}
+
+.mission-panel__note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.92rem;
+}
+
+.mission-panel__action-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.action-row {
+  border-top: 1px solid var(--border);
+}
+.action-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.action-row__summary {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 2px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.action-row__label {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.action-row__status {
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.action-row--requested .action-row__status {
+  color: var(--warn);
+}
+
+.action-row--executed .action-row__status {
+  color: var(--safe);
+}
+
+.action-row--denied .action-row__status {
+  color: var(--ink-faint);
+}
+
+.action-row__inline-result {
+  margin: 0;
+  padding: 0 2px 11px;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+
+.action-row__detail {
+  padding: 0 2px 14px;
+}
+
+.action-row__blurb {
+  margin: 0 0 10px;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.action-row__banner {
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin: 0 0 6px;
+}
+
+.action-row__request {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 0 0 10px;
+}
+
+.action-row__buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* First button in the pair is Approve (primary), second is Deny (quiet) —
+   the JSX order is fixed, so this is a reliable hook without touching
+   markup. */
+.action-row__buttons button:first-child {
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+.action-row__buttons button:first-child:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 88%, transparent);
+}
+.action-row__buttons button:last-child {
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+}
+
+.action-row__note {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.action-row__progress {
+  margin: 0;
+  color: var(--warn);
+  font-size: 0.9rem;
+}
+
+.action-row__outcome {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.action-row--executed .action-row__outcome {
+  color: var(--safe);
+}
+.action-row--denied .action-row__outcome {
+  color: var(--ink-muted);
+}
+
+.mission-panel__toggle-details {
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.mission-panel__toggle-details:hover {
+  color: var(--ink);
+}
+
+.mission-panel__details {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Empty state — no message selected. Plain, centered, quiet: there is
+   nothing to configure here, only somewhere to look next. */
+.cockpit__panel-empty {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-faint);
+  font-size: 0.92rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
 }
