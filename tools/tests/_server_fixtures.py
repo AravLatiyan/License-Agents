@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -83,7 +84,8 @@ def running_server():
     server_url = f"http://127.0.0.1:{port}/mcp"
     env = os.environ.copy()
     env["IMPORTS_MCP_PORT"] = str(port)
-    log_path = Path(tempfile.mkdtemp(prefix="imports-mcp-test-")) / "server.log"
+    log_dir = Path(tempfile.mkdtemp(prefix="imports-mcp-test-"))
+    log_path = log_dir / "server.log"
     # A FILE, never subprocess.PIPE. The server logs a line per request, and
     # nothing in this fixture reads that stream while the tests run — so with
     # a pipe the OS buffer fills after a handful of requests, the server
@@ -111,6 +113,12 @@ def running_server():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+            # Remove the log directory once the server is down, not before —
+            # the file is the diagnostic _wait_for_server reads, and a running
+            # child still has it open. ignore_errors because a cleanup failure
+            # must never fail a suite that otherwise passed (Qodo, PR #92);
+            # the worst case is one small directory left in the OS temp area.
+            shutil.rmtree(log_dir, ignore_errors=True)
 
 
 async def _call_tool(url: str, name: str, arguments: dict):
