@@ -75,3 +75,24 @@ def test_detonate_refuses_private_target_over_the_wire(running_server):
     assert "detonate" in [t.name for t in tools.tools]
     assert not result.is_error
     assert "refused private/internal network target" in result.content[0].text
+
+
+def test_server_survives_many_sequential_sessions(running_server):
+    """Regression: the server must still answer after far more requests than
+    an OS pipe buffer holds.
+
+    Before this test existed, `_server_fixtures.py` gave the subprocess an
+    unread `subprocess.PIPE` for stdout. The server logs a line per request,
+    nothing drained that pipe while tests ran, so once the buffer filled the
+    server blocked inside write() and every later session failed with
+    httpx.ReadTimeout — the whole file took 20 minutes and ended red, while
+    each test passed in isolation. PLAN.md §7 recorded that twice as
+    "flaky after a live network call"; it is neither flaky nor about the
+    network, it is deterministic once enough bytes have been logged.
+
+    Twelve sessions is comfortably past where the old pipe stalled (the
+    fifth), and still runs in a couple of seconds.
+    """
+    for _ in range(12):
+        _, result = call_tool(running_server, "domain_intel", {"domain": ""})
+        assert result.is_error
