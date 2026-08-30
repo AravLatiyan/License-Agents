@@ -446,7 +446,20 @@ test("a gated-action result without a string .note is reported as a FAILURE, nev
     // The summary must read as a failure to a human. This is the whole point:
     // the cockpit prefixes it with the fixed words "Executed: ", so the text
     // itself is what stops an operator believing an irreversible action ran.
-    assert.match(event.result_summary, /^FAILED/, `summary must announce failure, got: ${event.result_summary}`);
+    // UNCONFIRMED, never "FAILED" (Qodo, PR #96): an unreadable reply can
+    // follow a side effect that really happened, and these actions are not
+    // idempotent - telling an operator a send failed invites a second send
+    // to a real person.
+    assert.match(
+      event.result_summary,
+      /^UNCONFIRMED/,
+      `summary must announce an unknown outcome, got: ${event.result_summary}`,
+    );
+    assert.doesNotMatch(
+      event.result_summary,
+      /FAILED/,
+      `summary must not claim failure it cannot prove, got: ${event.result_summary}`,
+    );
     return event.result_summary;
   };
 

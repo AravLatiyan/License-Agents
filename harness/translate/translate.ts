@@ -182,24 +182,34 @@ const MAX_QUOTED_FAILURE_CHARS = 200;
  * result (T-074). Its job is to make the failure unmistakable in prose,
  * because the cockpit renders this text after the fixed words "Executed: "
  * (cockpit/src/ApprovalPanel.tsx:165, cockpit/src/missionPlan.ts:352) - a
- * render this file cannot change and should not need to. Leading with FAILED
- * means a human reads "Executed: FAILED - ..." rather than mistaking a
- * refusal for a completed irreversible action.
+ * render this file cannot change and should not need to. Leading with
+ * UNCONFIRMED means a human reads "Executed: UNCONFIRMED - ..." rather than
+ * mistaking an unreadable reply for a completed irreversible action.
  *
- * The wording claims only what is actually known. We know the reply was not a
- * result; we do NOT know whether the tool ran, because a garbled reply could
- * in principle follow a real side effect. "cannot be confirmed" is the honest
- * statement, and the reply is quoted so the operator can judge it themselves
- * rather than trusting this sentence.
+ * NOT "FAILED" (Qodo, PR #96): an unreadable reply can follow a side effect
+ * that really happened, so calling it a failure would be a claim we cannot
+ * support - and these actions are not idempotent. An operator told
+ * "notify_impersonated FAILED" may well send the notification a second time,
+ * to a real person, which is a worse outcome than the frozen panel this
+ * whole change exists to fix. The wording therefore states exactly what is
+ * known - the reply could not be read - says the outcome is unknown in both
+ * directions, and quotes the reply so the operator can judge it themselves.
  */
 function describeUnreadableResult(action: ProposedActionName, content: string): string {
   const trimmed = content.trim();
   if (trimmed === "") {
-    return `FAILED - ${action} returned an empty reply, so it cannot be confirmed to have run.`;
+    return (
+      `UNCONFIRMED - ${action} returned an empty reply. It may or may not have run; ` +
+      `check before retrying, because this action is not safe to repeat blindly.`
+    );
   }
   const quoted =
     trimmed.length > MAX_QUOTED_FAILURE_CHARS ? `${trimmed.slice(0, MAX_QUOTED_FAILURE_CHARS)}…` : trimmed;
-  return `FAILED - ${action} returned no readable result, so it cannot be confirmed to have run. The tool replied: ${quoted}`;
+  return (
+    `UNCONFIRMED - ${action} returned no readable result. It may or may not have run; ` +
+    `check before retrying, because this action is not safe to repeat blindly. ` +
+    `The tool replied: ${quoted}`
+  );
 }
 
 /** Exactly TrueForge's TurnStateCancelledReason enum (contracts/events.ts). */
@@ -477,7 +487,7 @@ export function createTranslator(options: TranslatorOptions): Translator {
       // longer means silence, but it still never means success: the summary
       // says so in words, so a malformed or hostile payload cannot read as a
       // completed action (the standing requirement from Qodo, PR #75
-      // finding #2, now met by saying "FAILED" instead of by saying nothing).
+      // finding #2, now met by saying UNCONFIRMED instead of by saying nothing).
       const note = parsedOk && isRecord(parsed) && isStr(parsed.note) ? parsed.note : null;
       const event: ActionExecutedEvent = {
         type: "mission.action_executed",
