@@ -83,7 +83,7 @@ three subagents" is what we're asking for, not a guarantee of what gets spawned.
 **Structured evidence (T-024):** each subagent reports back to the lead as a small JSON object
 built from its own tool call's own field names (INFRASTRUCTURE: one object per tool it actually
 called — `domain_intel`/`url_reputation`/`detonate`'s own result fields, omitting a key entirely
-for a tool it didn't call; IDENTITY: `from_address`/`display_name`/`reply_to`/`return_path`/
+for a tool it didn't call; IDENTITY: `from_address`/`display_name`/`reply_to`/
 `lookalike_domain`/`lookalike_of`, computed from the parsed message, no tool call; HISTORY:
 `correspondence_history`'s own result fields, `domain` included) — never prose, and never an
 invented schema. "Own remit" is about judgment, not field names: a shared key name across two
