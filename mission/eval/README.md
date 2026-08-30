@@ -115,6 +115,26 @@ deliberately not treated as turn-terminal here: it fires per thread, so a
 delegated subagent finishing would end the read before the root agent had
 proposed anything.
 
+## Resolving which gate fired
+
+TrueForge never exposes an MCP tool to the model under its own name - every
+one is proxied behind `function.name == "call_tool"`, with the real name in
+that call's JSON-encoded arguments:
+
+```json
+{"name": "call_tool",
+ "arguments": "{\"mcp_server\":\"imports-mcp\",\"tool_name\":\"quarantine\",\"input\":{...}}"}
+```
+
+`_resolve_tool_name` unwraps that. A `call_tool` whose arguments are missing
+or malformed resolves to **nothing**, never to `"call_tool"` and never to a
+guess - reporting the wrapper's own name would read as a confident
+"not gated" answer.
+
+This is diagnostics only. `gate_fired` - the mere occurrence of
+`tool.approval_required` - remains the correctness boundary and the sole
+input to the metric, exactly as before.
+
 ## Retries
 
 TrueForge does not retry model calls - `VercelAILLM.ts:939` hardcodes

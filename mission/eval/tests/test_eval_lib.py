@@ -779,6 +779,207 @@ def test_the_temp_fixture_is_written_once_and_deleted_once_across_retries(
 
 
 # ---------------------------------------------------------------------------
+# Gated-tool name resolution through TrueForge's MCP proxy
+#
+# Regression for fixture #3 (sample-11.eml, 2026-08-30): three gates fired for
+# real - quarantine, create_block_rule, file_abuse_report - and
+# resolved_gated_tools came back EMPTY, because TrueForge proxies every MCP
+# tool behind function.name == "call_tool" with the real name in the call's
+# own JSON-encoded arguments. Scoring was unaffected (gate_fired is the
+# correctness boundary) but the run could not report WHICH action the agent
+# proposed, on every fixture, permanently.
+# ---------------------------------------------------------------------------
+
+
+def _proxied_call(call_id, tool_name, extra_input=None):
+    """A tool call in the shape TrueForge actually emits: the wrapper name at
+    function.name, the real tool inside arguments as a JSON *string*."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "call_tool",
+            "arguments": json.dumps(
+                {
+                    "mcp_server": "imports-mcp",
+                    "tool_name": tool_name,
+                    "input": extra_input if extra_input is not None else {},
+                }
+            ),
+        },
+    }
+
+
+def _message_with_calls(event_id, calls):
+    return {"type": "model.message", "id": event_id, "tool_calls": calls}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_directly_named_gated_tool_still_resolves(mock_urlopen):
+    """Unproxied shape must keep working - this is what every earlier test
+    in this file exercises, and it is not hypothetical: a non-MCP or
+    client-side tool would arrive this way."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _model_message("msg-1", "quarantine", "call-1"),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_proxied_call_tool_resolves_to_the_real_gated_name(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls("msg-1", [_proxied_call("call-1", "quarantine")]),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_proxied_non_gated_tool_is_not_reported_as_gated(mock_urlopen):
+    """parse_message travels through the same wrapper. Unwrapping must not
+    turn a read-only tool into a gated one."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls(
+                "msg-1",
+                [_proxied_call("call-1", "parse_message", {"fixture": "eval-x.eml"})],
+            ),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    # The gate still fired - TrueForge cannot emit that event for an ungated
+    # tool, so its occurrence stays the correctness boundary - but nothing is
+    # claimed about which gated tool it was.
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "not json at all",
+        json.dumps({"mcp_server": "imports-mcp"}),          # no tool_name
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": ""}),
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": "   "}),
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": 7}),
+        json.dumps(["not", "an", "object"]),
+        None,
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_malformed_proxy_arguments_resolve_to_nothing_never_a_guess(mock_urlopen, arguments):
+    call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "call_tool", "arguments": arguments},
+    }
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls("msg-1", [call]),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True, "an unreadable name never un-fires the gate"
+    assert observation.resolved_gated_tools == []
+    # Specifically: the wrapper's own name must not leak through as a result.
+    assert "call_tool" not in observation.resolved_gated_tools
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_three_proxied_gated_calls_in_one_approval_event_all_resolve(mock_urlopen):
+    """Replays fixture #3's real event: one tool.approval_required carrying
+    three ToolCallRefs that all point at the same model.message."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls(
+                "01m19jw6pmpa8nvnqdxk8h7wba",
+                [
+                    _proxied_call(
+                        "toolu_01Bb4AFs2Nj8ghNacVRvRDbs",
+                        "quarantine",
+                        {"message_ids": ["<c614a2e5@example.invalid>"]},
+                    ),
+                    _proxied_call(
+                        "toolu_01Y7sWz6QE9E57q2uH3XUz9E",
+                        "create_block_rule",
+                        {"pattern": "*@123gereedschap.nl"},
+                    ),
+                    _proxied_call(
+                        "toolu_01Scjg9pcnW22SQZUFCB9QFq",
+                        "file_abuse_report",
+                        {"domain": "123gereedschap.nl", "evidence": "..."},
+                    ),
+                ],
+            ),
+            _approval_required(
+                [
+                    ("toolu_01Bb4AFs2Nj8ghNacVRvRDbs", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                    ("toolu_01Y7sWz6QE9E57q2uH3XUz9E", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                    ("toolu_01Scjg9pcnW22SQZUFCB9QFq", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                ]
+            ),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == [
+        "quarantine",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_proxy_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_delete):
+    """Fixture #3 scored TP with an empty resolved list and must still score
+    TP now - the names are diagnostics, never an input to the metric."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(
+            lines=_sse_lines(
+                _message_with_calls("msg-1", [_proxied_call("call-1", "quarantine")]),
+                _approval_required([("call-1", "msg-1")]),
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-11.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.resolved_gated_tools == ["quarantine"]
+    report = score([result])
+    assert report.true_positives == 1
+
+
+# ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
 

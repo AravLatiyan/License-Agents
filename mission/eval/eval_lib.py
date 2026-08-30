@@ -35,7 +35,11 @@ at, inside *that* event's own `tool_calls: ModelMessageToolCall[]`
 (`{id, type: "function", function: {name, arguments}}`). Resolving a ref
 means remembering every `model.message` event's tool calls as the stream is
 read, then looking up `source_event_id` -> `tool_calls[].id == ref.id` ->
-`.function.name`. This module keeps that correlation state per-turn (never
+the tool actually being invoked. That last step is NOT simply
+`.function.name`: TrueForge proxies every MCP tool, so `function.name` is
+`call_tool` and the real name is `tool_name` inside that call's own
+JSON-encoded `arguments` (see _MCP_PROXY_TOOL_NAMES).
+This module keeps that correlation state per-turn (never
 across fixtures — see EVENT ISOLATION below).
 
 Name resolution is best-effort diagnostic detail, not the correctness
@@ -427,6 +431,63 @@ def _iter_sse_data_lines(response: Any) -> Iterator[str]:
             yield payload
 
 
+# TrueForge does not expose an MCP tool to the model under its own name. It
+# proxies every one through a wrapper whose model-level `function.name` is
+# `call_tool`, carrying the real name in that call's JSON-encoded arguments:
+#
+#   {"name": "call_tool",
+#    "arguments": "{\"mcp_server\": \"imports-mcp\",
+#                   \"tool_name\": \"quarantine\",
+#                   \"input\": {...}}"}
+#
+# Observed live on the first fixture whose gate actually fired (sample-11.eml,
+# 2026-08-30): three gated calls - quarantine, create_block_rule and
+# file_abuse_report - all arriving as `call_tool`. Reading `function.name`
+# alone therefore resolved every one of them to "call_tool", which is not in
+# the gated set, so `resolved_gated_tools` came back empty on a fixture where
+# three gates had genuinely fired.
+#
+# `list_tools` and `get_tool_info` are the sibling proxy tools; neither ever
+# carries a gated invocation, so only `call_tool` is unwrapped here.
+_MCP_PROXY_TOOL_NAMES = frozenset({"call_tool"})
+
+
+def _proxied_tool_name(arguments: Any) -> str | None:
+    """The real MCP tool name inside a `call_tool` wrapper's arguments.
+
+    `arguments` arrives as a JSON *string* on the wire (confirmed live); a
+    dict is accepted too so a caller that already decoded it still works.
+    Returns None rather than a guess whenever the arguments are missing,
+    malformed, or carry no usable `tool_name` - an unresolved reference is
+    reported as unresolved, never invented.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except ValueError:
+            return None
+    if not isinstance(arguments, dict):
+        return None
+    name = arguments.get("tool_name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name
+
+
+def _effective_tool_name(function: dict[str, Any]) -> str | None:
+    """The tool actually being invoked: the proxied name when this is one of
+    TrueForge's MCP wrappers, otherwise the model-level name as-is."""
+    name = function.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if name in _MCP_PROXY_TOOL_NAMES:
+        # A wrapper whose real target cannot be read is unresolved. Returning
+        # the wrapper's own name would be worse than None: "call_tool" is not
+        # a gated tool, so it would read as a confident non-gated answer.
+        return _proxied_tool_name(function.get("arguments"))
+    return name
+
+
 def _resolve_tool_name(
     model_message_tool_calls: dict[str, list[Any]], source_event_id: Any, tool_call_id: Any
 ) -> str | None:
@@ -440,9 +501,7 @@ def _resolve_tool_name(
             continue
         function = call.get("function")
         if isinstance(function, dict):
-            name = function.get("name")
-            if isinstance(name, str):
-                return name
+            return _effective_tool_name(function)
     return None
 
 
