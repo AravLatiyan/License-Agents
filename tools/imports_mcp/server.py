@@ -26,6 +26,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from imports_mcp.correspondence_history import correspondence_history as _correspondence_history
+from imports_mcp.create_block_rule import create_block_rule as _create_block_rule
 from imports_mcp.detonate import detonate as _detonate
 from imports_mcp.domain_intel import domain_intel as _domain_intel
 from imports_mcp.file_abuse_report import file_abuse_report as _file_abuse_report
@@ -248,6 +249,29 @@ def detonate(url: str) -> dict[str, Any]:
     if not url:
         raise ToolError("url must not be empty")
     return _detonate(url)
+
+
+@mcp.tool()
+def create_block_rule(pattern: str) -> dict[str, Any]:
+    """Record a block rule for a sender pattern such as `*@evil.example.com`.
+
+    **Gated (T-034):** TrueForge pauses this call for a human licence
+    decision before it runs — one of the four sequential gates (§10/§17).
+    Approval is the harness's job, never checked here.
+
+    **The rule store is write-only.** Nothing in this repository reads these
+    rules back and no mail is blocked by them. That is a deliberate, approved
+    scope call (T-032, Option B), taken after confirming there is nothing to
+    enforce against: Mailpit is a mail catcher with no rule or filter
+    endpoint anywhere in its API, and no component in the Range or the repo
+    reads a blocklist. This tool makes the fourth licence gate real — a
+    genuine call, a genuine human decision, a durable record of what was
+    decided — without claiming an enforcement path that does not exist.
+
+    Idempotent: the same pattern twice records one rule. Never raises; a
+    refused or failed write returns `created: false` with a note.
+    """
+    return _create_block_rule(pattern)
 
 
 @mcp.tool()
