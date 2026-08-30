@@ -12,10 +12,12 @@ clean clone/a judge's machine actually runs by default.
 
 from __future__ import annotations
 
+import io
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -36,15 +38,29 @@ def _pick_free_port() -> int:
         return probe.getsockname()[1]
 
 
-def _wait_for_server(proc: subprocess.Popen, port: int, timeout: float = 10.0) -> None:
+def _read_log(log_path: Path) -> str:
+    """Best effort: a missing or unreadable log must never mask the real
+    failure being reported alongside it."""
+    try:
+        return io.open(log_path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return "(server log unavailable)"
+
+
+def _wait_for_server(
+    proc: subprocess.Popen, port: int, log_path: Path, timeout: float = 10.0
+) -> None:
     """Poll for the port opening, but fail fast (with the captured output) if
     the child process has already exited — a successful TCP connect alone
     doesn't prove *our* server is what's listening, and waiting out the full
-    timeout on a dead child just makes failures slower to diagnose."""
+    timeout on a dead child just makes failures slower to diagnose.
+
+    Reads the log from `log_path` rather than from a pipe: see the fixture
+    below for why the server must never write into an unread pipe."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            output = proc.stdout.read() if proc.stdout else ""
+            output = _read_log(log_path)
             raise RuntimeError(
                 f"imports-mcp server exited early (code {proc.returncode}) "
                 f"before opening port {port}:\n{output}"
@@ -67,23 +83,34 @@ def running_server():
     server_url = f"http://127.0.0.1:{port}/mcp"
     env = os.environ.copy()
     env["IMPORTS_MCP_PORT"] = str(port)
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "imports_mcp.server"],
-        cwd=str(TOOLS_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    try:
-        _wait_for_server(proc, port)
-        yield server_url
-    finally:
-        proc.terminate()
+    log_path = Path(tempfile.mkdtemp(prefix="imports-mcp-test-")) / "server.log"
+    # A FILE, never subprocess.PIPE. The server logs a line per request, and
+    # nothing in this fixture reads that stream while the tests run — so with
+    # a pipe the OS buffer fills after a handful of requests, the server
+    # blocks forever inside write(), and every later session dies on
+    # httpx.ReadTimeout. That is exactly the "flaky after N calls" failure
+    # §7 logged twice (2026-08-26, 2026-08-30) and blamed on live network
+    # calls; a live call only makes it happen sooner by logging more.
+    # A file has no such buffer limit, and still keeps the output for
+    # _wait_for_server and for a human reading a failure.
+    with io.open(log_path, "w", encoding="utf-8") as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "imports_mcp.server"],
+            cwd=str(TOOLS_DIR),
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            _wait_for_server(proc, port, log_path)
+            yield server_url
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 async def _call_tool(url: str, name: str, arguments: dict):
