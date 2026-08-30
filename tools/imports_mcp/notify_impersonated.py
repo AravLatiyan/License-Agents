@@ -7,16 +7,26 @@ a human licence decision before this module ever runs. Nothing here checks
 for approval itself — that is the harness's job, and re-implementing it
 would be exactly the "don't rebuild what the harness already does" mistake.
 
-**This sends real mail, so it is deliberately Range-only by default.**
-`SMTP_HOST`/`SMTP_PORT` default to the T-060 Mailpit range
-(`localhost:1025`, published in `range/docker-compose.yml`, no auth). We
-never resolve the recipient's MX: `smtplib` connects to the configured host
-and the recipient address is only an envelope field, so a fictional address
-like `a.morgan@northgate-trust.example` goes to Mailpit and stops there.
+**This sends real mail, so it is deliberately Range-only.** `SMTP_HOST`/
+`SMTP_PORT` default to the T-060 Mailpit range (`localhost:1025`, published
+in `range/docker-compose.yml`, no auth). We never resolve the recipient's
+MX: `smtplib` connects to the configured host and the recipient address is
+only an envelope field, so a fictional address like
+`a.morgan@northgate-trust.example` goes to Mailpit and stops there.
 
-The SMTP plumbing (target resolution, address validation, response capping)
-lives in `_smtp.py`, shared with file_abuse_report (T-033) — extracted, not
-copied, so the port-0/blank-host guards cannot drift between the two. The
+Safe *defaults* are not the same as a guard, though (T-073). An operator or
+a stray `.env` can point `SMTP_HOST` at a real relay, and the recipient here
+is **model-supplied** — so an unguarded send puts real mail in a real
+stranger's inbox from a test run. This module therefore refuses to send
+unless the resolved SMTP host is loopback, exactly as file_abuse_report
+(T-033) has since it shipped, unless `ALLOW_EXTERNAL_SMTP=1` is deliberately
+set. `.env.example` already documented CLAUDE.md trap #6 ("Range mail server
+only") as applying "to it, not just file_abuse_report"; only the code had
+not caught up.
+
+The SMTP plumbing (target resolution, Range validation, response capping)
+lives in `_smtp.py`, shared with file_abuse_report — extracted, not copied,
+so the port-0/blank-host/loopback guards cannot drift between the two. The
 names re-exported below are kept because this module's public surface is
 imported by `server.py` and its test suite.
 
@@ -34,6 +44,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from imports_mcp._smtp import (
+    ALLOW_EXTERNAL_SMTP_ENV,
     DEFAULT_SMTP_HOST,
     DEFAULT_SMTP_PORT,
     MAX_ADDRESS_LENGTH,
@@ -42,6 +53,8 @@ from imports_mcp._smtp import (
     SMTP_TIMEOUT_SECONDS,
     _ADDRESS_RE,
     cap_response,
+    external_smtp_allowed,
+    resolve_range_target,
     serialized_size,
     shrink_string,
     smtp_target,
@@ -50,6 +63,7 @@ from imports_mcp._smtp import (
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 __all__ = [
+    "ALLOW_EXTERNAL_SMTP_ENV",
     "DEFAULT_SMTP_HOST",
     "DEFAULT_SMTP_PORT",
     "MAX_ADDRESS_LENGTH",
@@ -122,14 +136,45 @@ def notify_impersonated(address: str, evidence: str) -> dict[str, Any]:
     """Email the impersonated party that they are being impersonated.
 
     Gated: TrueForge holds this call for human approval before it runs
-    (T-034). Never raises on a transport failure — returns `sent: False`
-    with a note instead, same degradation contract as the read-only tools.
+    (T-034). Never raises — every failure path, the Range refusal included,
+    returns `sent: False` with a note, same degradation contract as the
+    read-only tools. A raise behind a licence gate would turn a refused send
+    into a lost turn, which is why the guard below returns rather than throws.
     """
     host, port = _smtp_target()
+
+    # CLAUDE.md trap #6: Range mail server only. The recipient here is
+    # model-supplied, so an SMTP_HOST pointing anywhere but the local Range
+    # would put real mail in a real person's inbox during a test run (T-073).
+    # Checked BEFORE the message is built: if we are not permitted to send at
+    # all, there is nothing to compose.
+    #
+    # `connect_host` is the already-validated loopback literal — connecting to
+    # it rather than re-resolving `host` closes the DNS-rebinding window
+    # between the check and the connection (Qodo, PR #40, on the sibling tool).
+    connect_host = resolve_range_target(host)
+    if connect_host is None:
+        if not external_smtp_allowed():
+            return _cap_response(
+                _failed(
+                    address,
+                    evidence,
+                    host,
+                    (
+                        f"refused: SMTP host {host!r} is not the local Range and "
+                        f"{ALLOW_EXTERNAL_SMTP_ENV}=1 is not set — a notification to a "
+                        "model-supplied address must never leave the Range from a test "
+                        "run (CLAUDE.md trap #6)"
+                    ),
+                )
+            )
+        # Deliberate opt-in: dial the operator's host as given.
+        connect_host = host
+
     message = build_message(address, evidence)
 
     try:
-        with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+        with smtplib.SMTP(connect_host, port, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
             smtp.send_message(message)
     except (OSError, smtplib.SMTPException) as exc:
         # OSError covers connection-refused/DNS/timeout; SMTPException covers
