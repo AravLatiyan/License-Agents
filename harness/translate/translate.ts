@@ -168,6 +168,40 @@ function isGatedActionName(name: string): name is ProposedActionName {
   );
 }
 
+/**
+ * How much of a gated tool's unreadable reply is quoted back to the operator
+ * (T-074). Long enough to carry a real validation message ("message_ids must
+ * be a non-empty list"), short enough that a buggy or hostile server cannot
+ * push a wall of text into a licence-gate panel. The ~2KB tool-response cap is
+ * a rule our own tools follow; nothing on the wire enforces it for us.
+ */
+const MAX_QUOTED_FAILURE_CHARS = 200;
+
+/**
+ * The `result_summary` for a gated action whose reply could not be read as a
+ * result (T-074). Its job is to make the failure unmistakable in prose,
+ * because the cockpit renders this text after the fixed words "Executed: "
+ * (cockpit/src/ApprovalPanel.tsx:165, cockpit/src/missionPlan.ts:352) - a
+ * render this file cannot change and should not need to. Leading with FAILED
+ * means a human reads "Executed: FAILED - ..." rather than mistaking a
+ * refusal for a completed irreversible action.
+ *
+ * The wording claims only what is actually known. We know the reply was not a
+ * result; we do NOT know whether the tool ran, because a garbled reply could
+ * in principle follow a real side effect. "cannot be confirmed" is the honest
+ * statement, and the reply is quoted so the operator can judge it themselves
+ * rather than trusting this sentence.
+ */
+function describeUnreadableResult(action: ProposedActionName, content: string): string {
+  const trimmed = content.trim();
+  if (trimmed === "") {
+    return `FAILED - ${action} returned an empty reply, so it cannot be confirmed to have run.`;
+  }
+  const quoted =
+    trimmed.length > MAX_QUOTED_FAILURE_CHARS ? `${trimmed.slice(0, MAX_QUOTED_FAILURE_CHARS)}…` : trimmed;
+  return `FAILED - ${action} returned no readable result, so it cannot be confirmed to have run. The tool replied: ${quoted}`;
+}
+
 /** Exactly TrueForge's TurnStateCancelledReason enum (contracts/events.ts). */
 function isTurnCancelledReason(v: unknown): v is TurnCancelledReason {
   return (
@@ -397,13 +431,66 @@ export function createTranslator(options: TranslatorOptions): Translator {
     if (!pending) return []; // no matching model.message seen - can't tell which tool this result is from
 
     let parsed: unknown;
+    let parsedOk = true;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return []; // unreadable result - nothing safe to attach it to
+      parsedOk = false;
     }
 
     const name = pending.name;
+
+    // GATED ACTIONS ARE DECIDED BEFORE THE PARSE RESULT IS CONSULTED (T-074).
+    //
+    // For every other tool here an unreadable reply means "drop it": nothing
+    // is waiting on it, and §13 says missing evidence is "not determined",
+    // not an error. A gated action is the opposite case. A human has already
+    // granted the licence, and the cockpit's gate stays on "Allowed -
+    // executing..." until a mission.action_executed carrying its gate index
+    // arrives (cockpit/src/ApprovalPanel.tsx:161, missionPlan.ts:354).
+    // Nothing else ever clears it - mission.approval_resolved is already
+    // past, and a tool error does not end the turn - so returning [] here
+    // left the operator watching a spinner for an action that had already
+    // failed.
+    //
+    // That is not hypothetical: three of the four gated wrappers in
+    // tools/imports_mcp/server.py validate their arguments by raising
+    // ToolError (quarantine :292-301, notify_impersonated :319-330,
+    // file_abuse_report :351-358), and that raise happens after the gate, so
+    // the licence is spent and the tool still did not run. An error message
+    // is not a JSON document, so it fails the parse above - which is exactly
+    // why this branch sits before the parse check rather than after it.
+    // (create_block_rule never raises; create_block_rule.py's own _failure()
+    // gives this same reason for why it returns a note instead.)
+    if (isGatedActionName(name)) {
+      const gateIndex = gateIndexByToolCallId.get(toolCallId);
+      // A result for a call that never became a licence gate: no gate to
+      // attach an outcome to, and no stuck panel to clear. Unchanged from
+      // before - inventing a gate index would put an outcome on a gate the
+      // human was never shown.
+      if (gateIndex === undefined) return [];
+      // `note` is the one field all four gated tools publish across success
+      // and failure alike (quarantine.py / notify_impersonated.py /
+      // file_abuse_report.py / create_block_rule.py; their own status field's
+      // *name* differs - quarantined vs sent - so note is the one thing safe
+      // to require without hard-coding a per-tool union here). Its absence no
+      // longer means silence, but it still never means success: the summary
+      // says so in words, so a malformed or hostile payload cannot read as a
+      // completed action (the standing requirement from Qodo, PR #75
+      // finding #2, now met by saying "FAILED" instead of by saying nothing).
+      const note = parsedOk && isRecord(parsed) && isStr(parsed.note) ? parsed.note : null;
+      const event: ActionExecutedEvent = {
+        type: "mission.action_executed",
+        mission_id: missionId,
+        gate_index: gateIndex,
+        action: name,
+        result_summary: note ?? describeUnreadableResult(name, content),
+      };
+      return [event];
+    }
+
+    if (!parsedOk) return []; // unreadable result - nothing safe to attach it to
+
     switch (name) {
       case "parse_message":
         if (!isParsedMessage(parsed)) return []; // malformed result - not a well-formed mission event either
@@ -446,31 +533,10 @@ export function createTranslator(options: TranslatorOptions): Translator {
         if (!isDetonationResult(parsed)) return []; // malformed result - not a well-formed mission event either
         return [{ type: "mission.detonation", mission_id: missionId, detonation: parsed }];
 
-      case "quarantine":
-      case "notify_impersonated":
-      case "create_block_rule":
-      case "file_abuse_report": {
-        // Every one of the four gated tools shares one field across success
-        // and failure alike: a string `note` (quarantine.py/
-        // notify_impersonated.py/file_abuse_report.py all return one; their
-        // own status field's *name* differs - quarantined vs sent - so note
-        // is the one thing safe to require without hard-coding a per-tool
-        // union here). Without it, `{}` (or any non-tool-shaped JSON) would
-        // otherwise still produce mission.action_executed, falsely claiming
-        // the action ran (Qodo, PR #75 finding #2).
-        if (!isRecord(parsed) || !isStr(parsed.note)) return [];
-        const gateIndex = gateIndexByToolCallId.get(toolCallId);
-        if (gateIndex === undefined) return []; // result for a call that never became a licence gate - nothing to attach it to
-        const resultSummary = parsed.note;
-        const event: ActionExecutedEvent = {
-          type: "mission.action_executed",
-          mission_id: missionId,
-          gate_index: gateIndex,
-          action: name,
-          result_summary: resultSummary,
-        };
-        return [event];
-      }
+      // NOTE: the four gated tools (quarantine, notify_impersonated,
+      // create_block_rule, file_abuse_report) are deliberately absent from
+      // this switch - they are handled above, before the JSON parse is
+      // allowed to decide the outcome.
 
       default:
         return []; // unrecognised tool name
