@@ -15,6 +15,8 @@ import pytest
 
 from eval_lib import (
     AGENT_JSON_PATH,
+    MAX_TURN_ATTEMPTS,
+    RetryableTurnError,
     FIXTURES_DIR,
     FixtureResult,
     TrueForgeError,
@@ -181,7 +183,7 @@ def test_positive_gated_action_is_detected(mock_urlopen):
 def test_negative_when_turn_completes_with_no_approval_event(mock_urlopen):
     lines = _sse_lines(
         _model_message("msg-1", "domain_intel", "call-1"),  # read-only, never gated
-        {"type": "turn.done"},
+        {"type": "turn.done", "state": {"status": "done"}},
     )
     mock_urlopen.return_value = _FakeResponse(lines=lines)
 
@@ -338,13 +340,1031 @@ def test_completely_empty_stream_raises_trueforge_error(mock_urlopen):
 
 
 # ---------------------------------------------------------------------------
+# turn.done carrying a failure status
+#
+# Regression for the first live fixture (2026-08-30, sample-1.eml): a real
+# turn.done arrived with {"status": "error", "message": "Cannot connect to
+# API: "} after a subagent's model call failed mid-turn, and the harness
+# scored it predicted_positive=False / error=None - a false negative on a
+# ground-truth phishing fixture, silently counted in the denominator.
+# ---------------------------------------------------------------------------
+
+
+# The event exactly as the live server sent it, byte for byte.
+_LIVE_ERRORED_TURN_DONE = {
+    "type": "turn.done",
+    "id": "01m19gqb1x0000000000000000",
+    "state": {
+        "status": "error",
+        "message": "Cannot connect to API: ",
+        "completed_at": "2026-08-30T14:21:09.133Z",
+        "metrics": {
+            "total_input_tokens": 70086,
+            "total_output_tokens": 5723,
+            "total_tokens": 75809,
+        },
+    },
+    "created_at": "2026-08-30T14:21:09.133Z",
+    "thread_id": None,
+}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_errored_turn_done_raises_instead_of_scoring_a_negative(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(TrueForgeError, match="finished with status 'error'"):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_errored_turn_done_surfaces_the_servers_own_message(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert "Cannot connect to API" in str(excinfo.value)
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_phish_whose_turn_errors_is_a_failure_not_a_false_negative(
+    mock_urlopen, mock_write, mock_delete
+):
+    """The whole point of the fix: this fixture must not land in the metrics
+    as `predicted_positive is False` on a phishing label."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+        # Retries are covered separately; this test is about the scoring
+        # semantics of a failed turn, so it buys exactly one attempt.
+        max_attempts=1,
+    )
+
+    assert result.predicted_positive is None, "an errored turn must never be a negative"
+    assert result.error is not None and "Cannot connect to API" in result.error
+
+    report = score([result])
+    assert report.failed == [result]
+    assert report.total_scored == 0
+    assert report.false_negatives == 0
+    assert report.gate_trigger_accuracy is None
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_cancelled_turn_done_is_also_a_failure(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            {"type": "turn.done", "state": {"status": "cancelled", "reason": "user_cancelled"}}
+        )
+    )
+
+    with pytest.raises(TrueForgeError, match="user_cancelled"):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_successful_turn_done_still_scores_as_a_clean_negative(mock_urlopen):
+    """The fix must not turn a genuine 'agent declined to act' into a
+    failure - that is the measurement this harness exists to make."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.gate_fired is False
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status == "done"
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_stateless_turn_finished_event_is_still_a_clean_negative(mock_urlopen):
+    """mission.complete (this project's Layer 2 event) carries no state at
+    all; a missing status must stay readable, not become a failure."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "mission.complete"})
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status is None
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_gate_that_fires_before_an_errored_turn_done_still_counts(mock_urlopen):
+    """The gate is the answer the instant it fires - a turn that errors
+    afterwards cannot retract a licence request the operator already saw."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _model_message("msg-1", "quarantine", "call-1"),
+            _approval_required([("call-1", "msg-1")]),
+            _LIVE_ERRORED_TURN_DONE,
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+# ---------------------------------------------------------------------------
+# Bounded retry for transient model-transport failures
+#
+# TrueForge hardcodes maxRetries: 0 (VercelAILLM.ts:939), so a connect-layer
+# blip the Vercel AI SDK itself stamps `isRetryable: true` still kills the
+# whole turn. Every attempt below is a real billed turn in production, so
+# these tests pin exactly which failures earn one and which never do.
+# ---------------------------------------------------------------------------
+
+
+def _errored_turn(message):
+    return {"type": "turn.done", "state": {"status": "error", "message": message}}
+
+
+def _session_ok():
+    return _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8"))
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_retryable_transport_failure_raises_the_retryable_subclass(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(RetryableTurnError):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_provider_error_is_not_the_retryable_subclass(mock_urlopen):
+    """Still a failure - just never worth paying for a second attempt."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(_errored_turn("model produced an invalid tool call"))
+    )
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "authentication_error: invalid x-api-key",
+        "rate_limit_error: number of requests has exceeded your rate limit",
+        "invalid_request_error: max_tokens must be greater than 0",
+        "overloaded_error",
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_auth_rate_limit_and_invalid_request_are_never_retryable(mock_urlopen, message):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_errored_turn(message)))
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_cancelled_turn_is_never_retryable(mock_urlopen):
+    """Somebody stopped it on purpose; re-spending to override that is wrong."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            {"type": "turn.done", "state": {"status": "cancelled", "reason": "user_cancelled"}}
+        )
+    )
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert not isinstance(excinfo.value, RetryableTurnError)
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_one_transient_failure_then_success_scores_normally(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),   # attempt 1: blip
+        _session_ok(),
+        _FakeResponse(                                              # attempt 2: gate fires
+            lines=_sse_lines(
+                _model_message("msg-1", "quarantine", "call-1"),
+                _approval_required([("call-1", "msg-1")]),
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.error is None
+    assert result.attempts == 2
+    assert result.resolved_gated_tools == ["quarantine"], "no duplicate gate events across retries"
+
+    report = score([result])
+    assert report.true_positives == 1
+    assert report.total_scored == 1
+    assert report.failed == []
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_repeated_transient_failures_eventually_fail_the_fixture(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is None, "an exhausted retry is still never a negative"
+    assert result.attempts == 3
+    assert "gave up after 3 attempts" in result.error
+
+    report = score([result])
+    assert report.failed == [result]
+    assert report.total_scored == 0
+    assert report.false_negatives == 0
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_retry_budget_is_bounded(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """No unbounded loop: exactly MAX_TURN_ATTEMPTS turns, no more."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ] * 10
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.attempts == MAX_TURN_ATTEMPTS
+    # one create_session + one turn per attempt, and nothing beyond the budget
+    assert mock_urlopen.call_count == 2 * MAX_TURN_ATTEMPTS
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_non_retryable_failure_is_not_retried_at_all(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines(_errored_turn("authentication_error: invalid x-api-key"))),
+    ]
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 1
+    assert mock_urlopen.call_count == 2, "an auth failure must never cost a second billed turn"
+    assert mock_sleep.call_count == 0
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_successful_turn_is_never_retried(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="ham-1.eml", label="ham"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is False
+    assert result.attempts == 1
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_gate_that_already_fired_is_never_retracted_by_a_later_failure(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    """The operator has already seen the licence request. Reading stops at
+    the gate, so the errored turn.done behind it is never even parsed - and
+    no second turn is paid for."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(),
+        _FakeResponse(
+            lines=_sse_lines(
+                _model_message("msg-1", "quarantine", "call-1"),
+                _approval_required([("call-1", "msg-1")]),
+                _LIVE_ERRORED_TURN_DONE,
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.attempts == 1
+    assert result.error is None
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_dropped_stream_is_not_retried(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """A truncated stream leaves the turn's outcome unknown and possibly
+    still running server-side; re-submitting would double-spend."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [_session_ok(), _FakeResponse(lines=[])]
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 1
+    assert "ended without" in result.error
+    assert mock_urlopen.call_count == 2
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_each_retry_uses_a_fresh_session(mock_urlopen, mock_write, mock_delete, mock_sleep):
+    """Event isolation is what makes a retry safe to score: attempt 2 reads
+    its own session's stream, so attempt 1's events cannot leak in."""
+    mock_write.return_value = "eval-x.eml"
+    first = _FakeResponse(body=json.dumps({"data": {"id": "sess-A"}}).encode("utf-8"))
+    second = _FakeResponse(body=json.dumps({"data": {"id": "sess-B"}}).encode("utf-8"))
+    mock_urlopen.side_effect = [
+        first, _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        second, _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    turn_urls = [
+        c[0][0].full_url for c in mock_urlopen.call_args_list if "/turns" in c[0][0].full_url
+    ]
+    assert turn_urls == [
+        "http://localhost:8790/api/v1/sessions/sess-A/turns",
+        "http://localhost:8790/api/v1/sessions/sess-B/turns",
+    ]
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_temp_fixture_is_written_once_and_deleted_once_across_retries(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _session_ok(), _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+        _session_ok(),
+        _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+    ]
+
+    evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert mock_write.call_count == 1
+    assert mock_delete.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Gated-tool name resolution through TrueForge's MCP proxy
+#
+# Regression for fixture #3 (sample-11.eml, 2026-08-30): three gates fired for
+# real - quarantine, create_block_rule, file_abuse_report - and
+# resolved_gated_tools came back EMPTY, because TrueForge proxies every MCP
+# tool behind function.name == "call_tool" with the real name in the call's
+# own JSON-encoded arguments. Scoring was unaffected (gate_fired is the
+# correctness boundary) but the run could not report WHICH action the agent
+# proposed, on every fixture, permanently.
+# ---------------------------------------------------------------------------
+
+
+def _proxied_call(call_id, tool_name, extra_input=None):
+    """A tool call in the shape TrueForge actually emits: the wrapper name at
+    function.name, the real tool inside arguments as a JSON *string*."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "call_tool",
+            "arguments": json.dumps(
+                {
+                    "mcp_server": "imports-mcp",
+                    "tool_name": tool_name,
+                    "input": extra_input if extra_input is not None else {},
+                }
+            ),
+        },
+    }
+
+
+def _message_with_calls(event_id, calls):
+    return {"type": "model.message", "id": event_id, "tool_calls": calls}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_directly_named_gated_tool_still_resolves(mock_urlopen):
+    """Unproxied shape must keep working - this is what every earlier test
+    in this file exercises, and it is not hypothetical: a non-MCP or
+    client-side tool would arrive this way."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _model_message("msg-1", "quarantine", "call-1"),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_proxied_call_tool_resolves_to_the_real_gated_name(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls("msg-1", [_proxied_call("call-1", "quarantine")]),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_proxied_non_gated_tool_is_not_reported_as_gated(mock_urlopen):
+    """parse_message travels through the same wrapper. Unwrapping must not
+    turn a read-only tool into a gated one."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls(
+                "msg-1",
+                [_proxied_call("call-1", "parse_message", {"fixture": "eval-x.eml"})],
+            ),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    # The gate still fired - TrueForge cannot emit that event for an ungated
+    # tool, so its occurrence stays the correctness boundary - but nothing is
+    # claimed about which gated tool it was.
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "not json at all",
+        json.dumps({"mcp_server": "imports-mcp"}),          # no tool_name
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": ""}),
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": "   "}),
+        json.dumps({"mcp_server": "imports-mcp", "tool_name": 7}),
+        json.dumps(["not", "an", "object"]),
+        None,
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_malformed_proxy_arguments_resolve_to_nothing_never_a_guess(mock_urlopen, arguments):
+    call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "call_tool", "arguments": arguments},
+    }
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls("msg-1", [call]),
+            _approval_required([("call-1", "msg-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True, "an unreadable name never un-fires the gate"
+    assert observation.resolved_gated_tools == []
+    # Specifically: the wrapper's own name must not leak through as a result.
+    assert "call_tool" not in observation.resolved_gated_tools
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_three_proxied_gated_calls_in_one_approval_event_all_resolve(mock_urlopen):
+    """Replays fixture #3's real event: one tool.approval_required carrying
+    three ToolCallRefs that all point at the same model.message."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_with_calls(
+                "01m19jw6pmpa8nvnqdxk8h7wba",
+                [
+                    _proxied_call(
+                        "toolu_01Bb4AFs2Nj8ghNacVRvRDbs",
+                        "quarantine",
+                        {"message_ids": ["<c614a2e5@example.invalid>"]},
+                    ),
+                    _proxied_call(
+                        "toolu_01Y7sWz6QE9E57q2uH3XUz9E",
+                        "create_block_rule",
+                        {"pattern": "*@123gereedschap.nl"},
+                    ),
+                    _proxied_call(
+                        "toolu_01Scjg9pcnW22SQZUFCB9QFq",
+                        "file_abuse_report",
+                        {"domain": "123gereedschap.nl", "evidence": "..."},
+                    ),
+                ],
+            ),
+            _approval_required(
+                [
+                    ("toolu_01Bb4AFs2Nj8ghNacVRvRDbs", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                    ("toolu_01Y7sWz6QE9E57q2uH3XUz9E", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                    ("toolu_01Scjg9pcnW22SQZUFCB9QFq", "01m19jw6pmpa8nvnqdxk8h7wba"),
+                ]
+            ),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == [
+        "quarantine",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_proxy_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_delete):
+    """Fixture #3 scored TP with an empty resolved list and must still score
+    TP now - the names are diagnostics, never an input to the metric."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(
+            lines=_sse_lines(
+                _message_with_calls("msg-1", [_proxied_call("call-1", "quarantine")]),
+                _approval_required([("call-1", "msg-1")]),
+            )
+        ),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-11.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.resolved_gated_tools == ["quarantine"]
+    report = score([result])
+    assert report.true_positives == 1
+
+
+# ---------------------------------------------------------------------------
+# Live SSE ordering: header -> deltas -> approval
+#
+# Regression for live fixtures #3 and #4 (2026-08-30). TrueForge opens an
+# assistant turn with a `model.message` HEADER carrying no tool_calls
+# (AgentThread.ts:1021), streams the calls as `model.message.delta` events,
+# and only assembles the complete message afterwards - persisted, and returned
+# by GET /events, but emitted too late to correlate against. Both fixtures
+# fired real gates and resolved NOTHING, and replaying the persisted events
+# resolved fine, which is exactly what hid it: a stored log is not the stream.
+# ---------------------------------------------------------------------------
+
+# The real modelMessageEventId / tool-call ids from fixture #4's approval event.
+_F4_SOURCE_EVENT_ID = "01m19kr53d697ya9wvx0ptkt5t"
+_F4_CALLS = [
+    ("toolu_01Wn9KNBCWwzeLM2RtortiPT", "quarantine",
+     {"message_ids": ["<a6e2feecb5be84894fdbdba6447a7b10@example.invalid>"]}),
+    ("toolu_01VQuEFZepNzpdzwKYswBRD6", "notify_impersonated",
+     {"address": "security@binance.com", "evidence": "Phishing email impersonating Binance"}),
+    ("toolu_01XdjB1TkPxaPAn41Ag5rXFa", "create_block_rule",
+     {"pattern": "*@ilonasavola.com"}),
+    ("toolu_01FJJTkHWtbrd5bMgqUizPZn", "file_abuse_report",
+     {"domain": "ilonasavola.com", "evidence": "staging host wp-cloud.dev"}),
+]
+
+
+def _message_header(event_id):
+    """What TrueForge actually emits to OPEN an assistant turn: no tool_calls."""
+    return {
+        "type": "model.message",
+        "id": event_id,
+        "thread_id": "main",
+        "created_at": "2026-08-30T15:12:00.000Z",
+    }
+
+
+def _delta(event_id, index, call_id=None, name=None, arguments=None):
+    call = {"index": index}
+    if call_id is not None:
+        call["id"] = call_id
+    function = {}
+    if name is not None:
+        function["name"] = name
+    if arguments is not None:
+        function["arguments"] = arguments
+    if function:
+        call["function"] = function
+    return {
+        "type": "model.message.delta",
+        "id": event_id,
+        "thread_id": "main",
+        "tool_calls": [call],
+    }
+
+
+def _proxy_arguments(tool_name, tool_input):
+    return json.dumps(
+        {"mcp_server": "imports-mcp", "tool_name": tool_name, "input": tool_input}
+    )
+
+
+def _fixture4_stream():
+    """Fixture #4's exact ordering: header, then one delta per gated call,
+    then a single approval event referencing all four."""
+    events = [_message_header(_F4_SOURCE_EVENT_ID)]
+    for index, (call_id, tool_name, tool_input) in enumerate(_F4_CALLS):
+        events.append(
+            _delta(
+                _F4_SOURCE_EVENT_ID,
+                index,
+                call_id=call_id,
+                name="call_tool",
+                arguments=_proxy_arguments(tool_name, tool_input),
+            )
+        )
+    events.append(
+        _approval_required([(call_id, _F4_SOURCE_EVENT_ID) for call_id, _, _ in _F4_CALLS])
+    )
+    return _sse_lines(*events)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_fixture4_sse_ordering_resolves_all_four_gated_tools(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_fixture4_stream())
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == [
+        "quarantine",
+        "notify_impersonated",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_tool_call_arguments_split_across_several_deltas_are_reassembled(mock_urlopen):
+    """`function.arguments` is documented as a partial JSON string that may
+    arrive across multiple deltas - concatenate, never parse a fragment."""
+    args = _proxy_arguments("quarantine", {"message_ids": ["<a@b.invalid>"]})
+    third = len(args) // 3
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_", arguments=args[:third]),
+            _delta("evt-1", 0, name="tool", arguments=args[third : third * 2]),
+            _delta("evt-1", 0, arguments=args[third * 2 :]),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_header_with_no_tool_calls_does_not_erase_accumulated_deltas(mock_urlopen):
+    """The header shares the delta's event id. Recording it as an empty
+    correlation entry would overwrite the deltas with nothing."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _delta(
+                "evt-1", 0, call_id="call-1", name="call_tool",
+                arguments=_proxy_arguments("quarantine", {}),
+            ),
+            {"type": "model.message", "id": "evt-1", "thread_id": "main", "tool_calls": []},
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_finished_model_message_still_wins_over_deltas(mock_urlopen):
+    """If a populated model.message ever does arrive in time, it is
+    authoritative - the delta path is a fallback, not a replacement."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            {
+                "type": "model.message",
+                "id": "evt-1",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "call_tool",
+                            "arguments": _proxy_arguments("file_abuse_report", {}),
+                        },
+                    }
+                ],
+            },
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.resolved_gated_tools == ["file_abuse_report"]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_delta_call_that_never_carries_an_id_is_dropped_not_guessed(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_truncated_delta_arguments_resolve_to_nothing(mock_urlopen):
+    """A stream cut mid-arguments leaves invalid JSON. That is unresolved,
+    never a fallback to the wrapper name."""
+    args = _proxy_arguments("quarantine", {"message_ids": ["<a@b.invalid>"]})
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-1"),
+            _delta("evt-1", 0, call_id="call-1", name="call_tool", arguments=args[: len(args) // 2]),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+    assert "call_tool" not in observation.resolved_gated_tools
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_deltas_from_a_different_message_do_not_resolve_this_reference(mock_urlopen):
+    """Correlation is per event id. A sibling assistant message's calls must
+    never satisfy another message's ToolCallRef."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _message_header("evt-other"),
+            _delta("evt-other", 0, call_id="call-1", name="call_tool",
+                   arguments=_proxy_arguments("quarantine", {})),
+            _approval_required([("call-1", "evt-1")]),
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == []
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_the_delta_fix_does_not_change_scoring(mock_urlopen, mock_write, mock_delete):
+    """Fixture #4 scored TP with an empty resolved list; it must still score
+    TP now. Names are diagnostics, never an input to the metric."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(lines=_fixture4_stream()),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-12.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is True
+    assert result.attempts == 1
+    assert result.resolved_gated_tools == [
+        "quarantine",
+        "notify_impersonated",
+        "create_block_rule",
+        "file_abuse_report",
+    ]
+    assert score([result]).true_positives == 1
+
+
+# ---------------------------------------------------------------------------
+# Qodo review, PR #99 - four findings, all accepted
+# ---------------------------------------------------------------------------
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_turn_done_with_no_state_is_a_failure_not_a_negative(mock_urlopen):
+    """Finding 1. TurnDoneEvent.state is required by the schema, so a
+    turn.done without one is protocol drift. Accepting it as a completion
+    would recreate the exact silent metric corruption this module fixed."""
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+
+    with pytest.raises(TrueForgeError, match="no readable state.status"):
+        run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},                      # state present but empty
+        {"status": None},        # explicit null
+        {"status": 7},           # wrong type
+        {"status": ""},          # empty string
+        "not-an-object",         # wrong shape entirely
+    ],
+)
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_malformed_turn_status_is_a_failure_not_a_negative(mock_urlopen, state):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "turn.done", "state": state})
+    )
+
+    with pytest.raises(TrueForgeError, match="no readable state.status"):
+        run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_mission_complete_is_still_allowed_to_be_stateless(mock_urlopen):
+    """The one legitimately stateless terminal event must keep working -
+    tightening turn.done must not break this project's own Layer 2 event."""
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "mission.complete"}))
+
+    observation = run_turn_and_observe("sess-1", "m", GATED_TOOLS)
+
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status is None
+
+
+@patch("eval_lib.time.sleep")
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_failed_session_creation_reports_zero_billed_turns(
+    mock_urlopen, mock_write, mock_delete, mock_sleep
+):
+    """Finding 2. create_session only POSTs /sessions - no turn, no model
+    call - so a failure there costs nothing and must not be summed as spend."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        "url", 500, "boom", hdrs=None, fp=None  # type: ignore[arg-type]
+    )
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert result.attempts == 0, "no turn was ever submitted"
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+def test_a_local_write_failure_reports_zero_billed_turns(mock_write, mock_delete):
+    """Finding 3. A filesystem error before any session exists is not a
+    billed turn; the old max(attempts, 1) floor reported a phantom one."""
+    mock_write.side_effect = OSError("disk full")
+
+    result = evaluate_fixture(_fixture(), agent="universal-imports", gated_tools=GATED_TOOLS)
+
+    assert result.predicted_positive is None
+    assert "disk full" in result.error
+    assert result.attempts == 0
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_successful_fixture_still_reports_one_billed_turn(mock_urlopen):
+    """The counter must still be right in the normal case - moving it after
+    create_session must not make a real turn invisible."""
+    with patch("eval_lib.write_temp_fixture", return_value="eval-x.eml"), patch(
+        "eval_lib.delete_temp_fixture"
+    ):
+        mock_urlopen.side_effect = [
+            _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+            _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})),
+        ]
+        result = evaluate_fixture(
+            _fixture(name="ham-1.eml", label="ham"),
+            agent="universal-imports",
+            gated_tools=GATED_TOOLS,
+        )
+
+    assert result.predicted_positive is False
+    assert result.attempts == 1
+
+
+@pytest.mark.parametrize("budget", [0, -1])
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_nonpositive_retry_budget_is_rejected_before_anything_is_spent(
+    mock_urlopen, mock_write, mock_delete, budget
+):
+    """Finding 4. A caller that configured no attempts must not be charged
+    for one - and must not even have a temp fixture written."""
+    with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+        evaluate_fixture(
+            _fixture(),
+            agent="universal-imports",
+            gated_tools=GATED_TOOLS,
+            max_attempts=budget,
+        )
+
+    assert mock_urlopen.call_count == 0
+    assert mock_write.call_count == 0
+
+
+# ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
 
 
 @patch("eval_lib.urllib.request.urlopen")
 def test_create_session_returns_the_session_id(mock_urlopen):
-    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"id": "sess-abc"}).encode("utf-8"))
+    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8"))
 
     session_id = create_session("universal-imports")
 
@@ -362,10 +1382,30 @@ def test_create_session_raises_on_http_error(mock_urlopen):
 
 
 @patch("eval_lib.urllib.request.urlopen")
-def test_create_session_raises_when_response_has_no_id(mock_urlopen):
+def test_create_session_raises_when_response_has_no_data(mock_urlopen):
     mock_urlopen.return_value = _FakeResponse(body=json.dumps({"status": "ok"}).encode("utf-8"))
 
-    with pytest.raises(TrueForgeError):
+    with pytest.raises(TrueForgeError, match="no data object"):
+        create_session("universal-imports")
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_raises_when_data_carries_no_id(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"title": None}}).encode("utf-8")
+    )
+
+    with pytest.raises(TrueForgeError, match="no usable id"):
+        create_session("universal-imports")
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_raises_when_the_id_is_top_level_only(mock_urlopen):
+    """The pre-fix shape. A server that answered like this would mean the
+    wire changed again, and that must fail loudly rather than silently."""
+    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"id": "sess-abc"}).encode("utf-8"))
+
+    with pytest.raises(TrueForgeError, match="no data object"):
         create_session("universal-imports")
 
 
@@ -383,6 +1423,68 @@ def test_create_session_raises_trueforge_error_on_timeout(mock_urlopen):
 
     with pytest.raises(TrueForgeError, match="timed out"):
         create_session("universal-imports")
+
+
+# ---------------------------------------------------------------------------
+# Request shape - URL and body
+#
+# Nothing in this suite used to assert either, which is exactly how four
+# wrong wire shapes survived until a live instance rejected them (module
+# docstring, WIRE SHAPES). These pin all four against regression.
+# ---------------------------------------------------------------------------
+
+
+def _sent_request(mock_urlopen):
+    """The urllib.request.Request object passed to the mocked urlopen."""
+    return mock_urlopen.call_args[0][0]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_posts_to_the_api_v1_path(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8")
+    )
+
+    create_session("universal-imports", base_url="http://localhost:8790")
+
+    assert _sent_request(mock_urlopen).full_url == "http://localhost:8790/api/v1/sessions"
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_binds_the_agent_by_nested_name(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8")
+    )
+
+    create_session("universal-imports")
+
+    body = json.loads(_sent_request(mock_urlopen).data.decode("utf-8"))
+    assert body == {"agent": {"name": "universal-imports"}}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_run_turn_posts_to_the_api_v1_turns_path(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}}))
+
+    run_turn_and_observe(
+        "sess-1", "look at eval-x.eml", GATED_TOOLS, base_url="http://localhost:8790"
+    )
+
+    assert (
+        _sent_request(mock_urlopen).full_url
+        == "http://localhost:8790/api/v1/sessions/sess-1/turns"
+    )
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_run_turn_sends_input_as_an_array_of_items(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}}))
+
+    run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    body = json.loads(_sent_request(mock_urlopen).data.decode("utf-8"))
+    assert body["input"] == [{"type": "user.message", "content": "look at eval-x.eml"}]
+    assert body["stream"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -591,8 +1693,8 @@ def test_one_fixtures_events_cannot_contaminate_anothers_result(
         _model_message("msg-1", "quarantine", "call-1"),
         _approval_required([("call-1", "msg-1")]),
     )
-    negative_lines = _sse_lines({"type": "turn.done"})
-    session_response = _FakeResponse(body=json.dumps({"id": "sess-x"}).encode("utf-8"))
+    negative_lines = _sse_lines({"type": "turn.done", "state": {"status": "done"}})
+    session_response = _FakeResponse(body=json.dumps({"data": {"id": "sess-x"}}).encode("utf-8"))
 
     # First fixture: session creation, then a positive turn.
     # Second fixture: a fresh session creation, then a negative turn - a
