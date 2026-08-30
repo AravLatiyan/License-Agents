@@ -300,6 +300,199 @@ CLAUDE.md    The working rules this project holds itself to.
 
 ---
 
+## How TrueForge and Qodo made this project possible
+
+Neither tool was incidental. TrueForge supplied the runtime this system is an integration
+*with* — without it there is no turn stream, no tool execution, and nothing to pause. Qodo
+supplied adversarial pressure at the PR boundary, and repeatedly found defects that compiled,
+passed the tests, and would have shipped.
+
+### TrueForge — the runtime that made the behaviour real
+
+TrueForge runs the agent loop. This repo configures it and builds on top of it; it does not
+reimplement it. `harness/agent.json` is the whole configuration surface: model
+(`anthropic/claude-sonnet-5`, `temperature 0.2`, `max_tokens 16384`), a single `imports-mcp`
+connector, and the line that makes the safety story work —
+
+```json
+"require_approval_for_tools": ["quarantine", "notify_impersonated",
+                               "create_block_rule", "file_abuse_report"]
+```
+
+Those four names are the only place gating is declared. Every gated tool's docstring in
+`tools/imports_mcp/server.py` says so explicitly — *"Approval is the harness's job, never checked
+here"* — and no approval logic exists in the tool layer at all. `harness/agent-config.test.js`
+pins the list, its order, and the fact that the five read-only tools are **not** in it, because a
+typo in a gate name is not a loud failure: TrueForge accepts `require_approval_for_tools` entries
+for tools that do not exist, so `"quarentine"` would be schema-valid and would silently ungate the
+real one.
+
+**The boundary we built.** TrueForge's wire stream is raw: `model.message`,
+`tool.approval_required`, `tool.response`, `turn.done` and eight other types.
+`harness/translate/translate.ts` turns those into the `mission.*` events in `contracts/events.ts`
+that the cockpit renders. Two decisions define it:
+
+- **It never parses prose into structure.** `turn.done` carries the model's plain English, and
+  `contracts/events.ts` defines a three-way `VerdictLabel` — but the translator deliberately
+  never emits `mission.verdict`, because doing so would mean *"inventing a verdict TrueForge never
+  actually rendered"*. The same reasoning blocks the identity lane: emitting
+  `lookalike_domain: false` would render as "no lookalike detected" for a check nothing ran.
+  `VerdictLabel` therefore has **no live producer** anywhere in this project, which is also why
+  the T-042 evaluation harness scores `gate_trigger_accuracy` — did the agent propose a gated
+  action — rather than an invented classifier's agreement.
+- **Structure comes from correlating real tool calls.** `tool.approval_required` carries only
+  `ToolCallRef {id, source_event_id}` — no tool name. The translator remembers each
+  `model.message`'s own event id alongside its calls and resolves a gate only when **both** the
+  call id and `source_event_id` match, failing closed otherwise (`translate.ts:339-350`). That is
+  what lets a human be shown the actual tool and its decoded arguments instead of an opaque
+  reference.
+
+**The licence flow, end to end:** the agent calls a gated tool → TrueForge pauses the call and
+emits `tool.approval_required` → the translator emits `mission.approval_required` carrying that
+gate's own `tool_call_id` → the cockpit renders LICENCE REQUIRED with the resolved action →
+Allow/Deny posts a `user.tool_approval` resume as a new streaming turn → `resolveGate()` releases
+the next queued gate → the action settles as `mission.action_executed`, or the mission ends
+`mission.complete` / `mission.failed`. Gates are held **one outstanding at a time**, not merely
+capped at four.
+
+**What this bought for the qualifying test** — a judge must see the harness reach a real tool, run
+real code, and stop for a person. Against a live TrueForge 0.1.4 instance the agent registered
+(`201`), all nine MCP tools were discovered, and on fixture `sample-11.eml` a real
+`tool.approval_required` fired carrying three proposed actions. Nothing was resumed: the harness
+stops reading at the gate, so all three stayed parked and none executed. Across the full 40-fixture
+evaluation, **no approval was ever resumed and no gated action ever ran**.
+
+**Honest boundaries.** The translator and cockpit are unit-tested (69 and 62 tests) but have never
+been driven from a live TrueForge stream — the live path was exercised by the evaluation harness
+instead, and `translate.ts`'s own header records which behaviours are therefore assumptions.
+Reconnect-resume exists as `cockpit/src/resumableStream.ts` but is wired to nothing, because
+TrueForge publishes no documented cursor field. No `user.tool_approval` has ever been posted to a
+real server. And the live gate arrived **batched** — three calls in one approval event — which is
+not the "four sequential gates" the architecture above describes; the translator's queue is the
+mitigation, but it has not yet met a live batched event. TrueForge supplied the runtime and the
+event surface; it does not by itself make any of this safe. The controls are ours, and so are the
+gaps.
+
+**Still credential-blocked:** the Daytona sandbox (`PLAN.md` §5, T-035) and `URLHAUS_AUTH_KEY`.
+Notably, Daytona turned out *not* to be on the critical path — TrueForge standalone ships a local
+bubblewrap sandbox that needs `bwrap`, `socat` and `rg` and no credential at all. It is invisible
+from every catalog and settings endpoint, appearing only in `GET /api/v1/capabilities`, so a
+missing `socat` failed the boot probe silently and made every symptom point at Daytona instead.
+
+### Qodo — adversarial review, not a style checker
+
+Qodo reviewed every PR. Across the project it raised roughly 150 findings; 132 were resolved, 9
+were dismissed with written reasoning. **Qodo found and re-verified these issues; every fix was
+written by a human owner or an agent working as one.** Qodo never modified code.
+
+The pattern worth noticing is that the strongest findings were all in code that compiled and
+passed its tests.
+
+**Approval resolved to the wrong tool call** (PR #73, re-raised #74 · T-037). The translator
+joined a `ToolCallRef` to its `model.message` using only `call.id`, ignoring `source_event_id` —
+*"the field was named in a comment and then ignored."* Tool-call ids are unique only within the
+message that issued them, so a stale id could supply the name and arguments for a gate: **one
+action shown to the human while a different one is approved**, the exact failure the licence
+mechanism exists to prevent. Fixed to require both ids and fail closed. Qodo marked both findings
+resolved; harness suite 78/78 at merge.
+
+**The same class, reintroduced one layer up** (PR #85 · T-046). The cockpit's approval panel took
+`approval.tool_calls[0]`, so with several calls in one event **gate 2 resumed gate 1's action**.
+Fixed by adding `tool_call_id` to `ApprovalRequiredEvent` and carrying it per gate. The project's
+own note is blunt about why tests missed it: *"Qodo caught it; no test would have, because every
+existing fixture had one call per approval."*
+
+**Qodo rejecting our first answer** (PR #73 finding #3). One approval event carrying several calls
+emitted every gate simultaneously. The first response was a comment documenting the limitation,
+arguing the stream carries no "approval resolved" signal. A second Qodo pass rejected that —
+*"documents the limitation but does not prevent the invalid state"* — and the fix became real
+serialisation: `resolveGate(gateIndex)`, one gate outstanding, extras queued. The repo records the
+concession: *"which was the right call."*
+
+**A failure that rendered as still running** (PR #71 · T-037). `mission.failed` was missing from
+the cockpit's `KNOWN_TYPES`, so every valid failure event was rejected before reaching the plan
+tree; separately, terminal-state derivation checked only `mission.complete`, leaving a failed
+mission active forever. Both fixed.
+
+**A measurement that would have been silently invalid** (PR #76 · T-042). The evaluation harness
+submitted each fixture's raw RFC822 text, but the agent's prompt requires `parse_message(fixture)`
+first — and that tool only accepts a bare filename already in `tools/fixtures/`, a three-file
+whitelist unrelated to the eval corpus. Every eval turn would have failed the parser call or,
+worse, *"silently analyzed one of those 3 unrelated fixtures while scoring the result against the
+intended fixture's label."* Two sibling findings were the same shape: a truncated SSE stream became
+a false negative, and a bare `TimeoutError` while iterating an open stream would have aborted the
+whole 40-fixture loop. All fixed with regression tests.
+
+**Qodo catching a fix for overreaching** (PR #96 · T-074). A repair for gated-action failures
+reported them as `FAILED`, while the code's own comment admitted an unreadable reply can follow a
+side effect that really happened. These four actions are not idempotent — an operator told
+*"notify_impersonated FAILED"* may reasonably send it again, to a real person. Reworded to
+`UNCONFIRMED`, stating the outcome is unknown in both directions and quoting the reply so the
+operator judges it. The rationale now lives in the code (`translate.ts:186-213`).
+
+**And the branch that reintroduced its own headline bug** (PR #99 · T-042). A branch whose entire
+purpose was *"a failed turn must never be scored as a negative"* still accepted a `turn.done` with
+a missing or malformed status as success — recreating the exact silent metric corruption it
+existed to fix. Sharper still: four tests in the same suite were sending a statusless `turn.done`
+as their happy path, so the suite could never have caught it. Qodo found it by reading the
+module's own documented claim against the code's actual acceptance condition.
+
+**Findings were treated as hypotheses, not orders.** Qodo's suggestion to synthesise
+`Authentication-Results` headers into the SpamAssassin ham corpus was declined twice — RFC 5451
+was published in 2009 and those messages are from 2002, so adding one would assert a specific,
+false security-check outcome on real historical mail. A rule about detonating against `localhost`
+was declined four times, on the grounds that its stated reason is a network-reachability fact
+about a *remote* sandbox and does not apply to an in-process test fixture. When a Qodo dashboard
+kept showing a fixed finding as open, the evidence was checked line-by-line, shown to be stale,
+and the fix re-proved by running the real tool unmocked.
+
+**Where the loop does not reach.** A separate audit of already-merged code later found two real
+security defects no Qodo pass had ever raised — `notify_impersonated` would mail a model-supplied
+address through any configured SMTP host, and a granted licence whose action then failed could
+leave an operator watching "executing…" indefinitely. Both had passing tests; one test actively
+*asserted the buggy behaviour*. The lesson is recorded in `PLAN.md` §8: **Qodo reviews diffs, not
+systems.** Neither of those defects is attributable to Qodo, and the same holds for the
+test-suite deadlock in T-072, which came from a full-suite run rather than any review.
+
+### The development loop
+
+1. Build the smallest implementation that could work.
+2. Run the deterministic suites.
+3. Have Qodo review the actual PR HEAD — not a description of it.
+4. Treat each finding as a hypothesis and verify it independently against the code.
+5. Fix the genuine ones; decline the rest **in writing**, with evidence.
+6. Add regression tests, and mutation-check the ones that matter — a fix that only satisfies the
+   happy path is not a fix.
+7. Re-run the affected suite and the full suite.
+8. Merge only once the final HEAD has been reviewed and is green.
+
+Step 4 is the one that carried weight. This project executes irreversible actions — quarantining
+mail, emailing an impersonated party, filing an abuse report with a registrar — behind a human
+decision, over SMTP, against attacker-supplied URLs, with SSRF and DNS-pinning guards. In that
+setting "the tests pass" establishes very little: several of the defects above had passing tests,
+and one had a test defending the bug.
+
+### What each system contributed
+
+| System | Contribution | Why it mattered |
+|---|---|---|
+| **TrueForge** | Agent runtime, real turn stream, MCP tool execution, native approval pause and resume | Made the agent/harness interaction real rather than a static simulation — a gate that actually fires and actually stops |
+| **Qodo** | Adversarial PR review, bug discovery, sustained regression pressure | Repeatedly caught issues that compilation and green test suites did not expose, including two separate instances of "the human approves a different action than the one displayed" |
+| **Repository tests / mutation checks** | Deterministic verification (467 Python · 92 harness · 62 cockpit) | Converted findings into durable regressions and stopped fixes from merely satisfying the happy path |
+
+### The lesson
+
+The achievement here is not "we used an LLM and a code-review bot." It is the feedback loop the
+two produced together. TrueForge made runtime behaviour observable and real, so claims about
+gates, tool calls and failures could be checked against a wire rather than argued about. Qodo
+challenged the implementation at the PR boundary, where a second reader is cheapest and a defect
+is still free to fix. Tests and mutation checks turned those findings into regressions that
+outlive the conversation that produced them. And the parts the loop *missed* — the defects only a
+whole-system audit surfaced — are recorded just as plainly, because a review process you cannot
+state the limits of is not one you can rely on.
+
+---
+
 ## Developer / Advanced
 
 ### Run the test suites
