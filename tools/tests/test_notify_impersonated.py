@@ -28,10 +28,11 @@ EVIDENCE = "mission-001"
 
 @pytest.fixture(autouse=True)
 def _clear_smtp_env(monkeypatch):
-    """SMTP_HOST/SMTP_PORT may be set in a developer's .env (loaded at import).
-    Clear them so every test measures the *code's* default, not the machine's."""
-    monkeypatch.delenv("SMTP_HOST", raising=False)
-    monkeypatch.delenv("SMTP_PORT", raising=False)
+    """SMTP_HOST/SMTP_PORT/ALLOW_EXTERNAL_SMTP may be set in a developer's .env
+    (loaded at import). Clear them so every test measures the *code's* default,
+    not the machine's."""
+    for var in ("SMTP_HOST", "SMTP_PORT", "ALLOW_EXTERNAL_SMTP"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _mock_smtp():
@@ -59,26 +60,51 @@ def test_default_smtp_target_is_the_range_never_a_real_server():
 
 @patch("imports_mcp.notify_impersonated.smtplib.SMTP")
 def test_send_connects_to_the_range_by_default(mock_smtp):
+    """With no configuration, this tool can only ever reach a local Mailpit.
+
+    Since T-073 it connects to the *already-validated loopback literal*, not
+    to the name — handing `smtplib` the name would resolve DNS a second time
+    and the second answer can differ from the one the guard approved. The
+    reported `smtp_host` still shows the configured name.
+    """
+    import ipaddress
+
     cm, _ = _mock_smtp()
     mock_smtp.return_value = cm
 
-    notify_impersonated(ADDRESS, EVIDENCE)
+    result = notify_impersonated(ADDRESS, EVIDENCE)
 
     host, port = mock_smtp.call_args[0][0], mock_smtp.call_args[0][1]
-    assert (host, port) == ("localhost", 1025)
+    assert ipaddress.ip_address(host).is_loopback, f"connected to {host!r}, not loopback"
+    assert port == DEFAULT_SMTP_PORT
+    assert result["smtp_host"] == DEFAULT_SMTP_HOST
 
 
 @patch("imports_mcp.notify_impersonated.smtplib.SMTP")
 def test_env_vars_override_host_and_port(mock_smtp, monkeypatch):
+    """Rewritten for T-073. This test previously set `SMTP_HOST=mailpit.internal`
+    — a name that is not the local Range — and asserted the tool dialled it
+    anyway. That *was* the defect, written down as an expectation: an
+    unguarded override is exactly how a model-supplied address gets real mail
+    from a test run (CLAUDE.md trap #6).
+
+    What the test was really for is still worth keeping: the env vars are read
+    at call time and do reach `smtplib`. So it now overrides to a Range-valid
+    host with a non-default port, and the refusal case has its own test in the
+    guard section above.
+    """
+    import ipaddress
+
     cm, _ = _mock_smtp()
     mock_smtp.return_value = cm
-    monkeypatch.setenv("SMTP_HOST", "mailpit.internal")
+    monkeypatch.setenv("SMTP_HOST", "127.0.0.1")
     monkeypatch.setenv("SMTP_PORT", "2525")
 
     result = notify_impersonated(ADDRESS, EVIDENCE)
 
-    assert (mock_smtp.call_args[0][0], mock_smtp.call_args[0][1]) == ("mailpit.internal", 2525)
-    assert result["smtp_host"] == "mailpit.internal"
+    assert ipaddress.ip_address(mock_smtp.call_args[0][0]).is_loopback
+    assert mock_smtp.call_args[0][1] == 2525
+    assert result["smtp_host"] == "127.0.0.1"
 
 
 @patch("imports_mcp.notify_impersonated.smtplib.SMTP")
@@ -94,6 +120,103 @@ def test_non_numeric_port_falls_back_to_the_range_port(mock_smtp, monkeypatch):
     assert mock_smtp.call_args[0][1] == DEFAULT_SMTP_PORT
 
 
+# --- the Range guard: never mail a real third party from a test run (T-073) --
+#
+# The defect this section was written against: notify_impersonated resolved
+# SMTP_HOST/SMTP_PORT and handed them straight to smtplib with no loopback
+# check and no ALLOW_EXTERNAL_SMTP opt-in — the guard its sibling
+# file_abuse_report has carried since T-033. `.env.example` documented the
+# opt-in as applying to both tools; only one of them enforced it. This tool
+# mails a *model-supplied* address, so an SMTP_HOST pointing at a real relay
+# would have put real mail in a real stranger's inbox from a test run
+# (CLAUDE.md trap #6, "Range mail server only").
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_refuses_to_send_to_a_non_range_smtp_host(mock_smtp, monkeypatch):
+    """The single most important test here. The recipient address is chosen by
+    the model; a non-loopback SMTP destination must refuse, not deliver.
+
+    A *structured* refusal, never an exception: this tool sits behind a
+    TrueForge licence gate, and raising after a human has granted the licence
+    turns a refused send into a broken turn."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "smtp.real-mail-provider.example")
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["sent"] is False
+    assert result["available"] is False
+    assert "refused" in result["note"]
+    assert result["smtp_host"] == "smtp.real-mail-provider.example"
+    mock_smtp.assert_not_called(), "must not even open a connection"
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_explicit_opt_in_allows_an_external_host(mock_smtp, monkeypatch):
+    """The opt-in exists so the guard is a safety default, not a dead end —
+    but it must be deliberate and explicit. Mirrors file_abuse_report."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "smtp.real-mail-provider.example")
+    monkeypatch.setenv("ALLOW_EXTERNAL_SMTP", "1")
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["sent"] is True
+    mock_smtp.assert_called_once()
+    assert mock_smtp.call_args[0][0] == "smtp.real-mail-provider.example"
+
+
+@pytest.mark.parametrize("value", ["", "0", "true", "yes", "TRUE", " "])
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_only_an_exact_1_enables_the_opt_in(mock_smtp, monkeypatch, value):
+    """Anything truthy-looking but not exactly "1" must NOT enable sending."""
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "smtp.real-mail-provider.example")
+    monkeypatch.setenv("ALLOW_EXTERNAL_SMTP", value)
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["sent"] is False
+    mock_smtp.assert_not_called()
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_unresolvable_host_is_treated_as_unsafe_not_assumed_local(mock_smtp, monkeypatch):
+    """A host we cannot prove is loopback must not be assumed safe."""
+    monkeypatch.setenv("SMTP_HOST", "no-such-host.invalid")
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    assert result["sent"] is False
+    mock_smtp.assert_not_called()
+
+
+@patch("imports_mcp.notify_impersonated.smtplib.SMTP")
+def test_connects_to_validated_literal_not_the_rebindable_name(mock_smtp, monkeypatch):
+    """Same reasoning as file_abuse_report's PR #40 finding #2: validating the
+    name and then handing the *name* to smtplib resolves DNS twice, and a
+    hostile resolver can swap in a routable address between the two answers.
+    Connecting to the already-validated loopback literal closes that window.
+    The reported `smtp_host` still shows the configured name, which is what an
+    operator recognises."""
+    import ipaddress
+
+    cm, _ = _mock_smtp()
+    mock_smtp.return_value = cm
+    monkeypatch.setenv("SMTP_HOST", "localhost")
+
+    result = notify_impersonated(ADDRESS, EVIDENCE)
+
+    connected = mock_smtp.call_args[0][0]
+    assert connected != "localhost", "must not hand smtplib a re-resolvable name"
+    assert ipaddress.ip_address(connected).is_loopback
+    assert result["smtp_host"] == "localhost"
+
+
 # --- regressions for Qodo's PR #29 findings #1 and #2 ----------------------
 
 
@@ -106,15 +229,21 @@ def test_blank_smtp_host_falls_back_to_the_range(mock_smtp, monkeypatch, blank):
     connects `if host:`, so a blank host silently made every notification a
     no-op. Anyone following the documented setup path got a tool that never
     delivered. Set-but-empty is tested here, NOT deleted: the original
-    fixture deleted the var, which is why the bug survived review."""
+    fixture deleted the var, which is why the bug survived review.
+
+    Asserts the *connection* is loopback rather than literally "localhost":
+    since T-073 the tool dials the validated literal, not the name."""
+    import ipaddress
+
     cm, _ = _mock_smtp()
     mock_smtp.return_value = cm
     monkeypatch.setenv("SMTP_HOST", blank)
 
     result = notify_impersonated(ADDRESS, EVIDENCE)
 
-    assert mock_smtp.call_args[0][0] == DEFAULT_SMTP_HOST
+    assert ipaddress.ip_address(mock_smtp.call_args[0][0]).is_loopback
     assert result["smtp_host"] == DEFAULT_SMTP_HOST
+    assert result["sent"] is True, "a blank host must fall back to the Range, not no-op"
 
 
 @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "not-a-port", "  "])
@@ -280,10 +409,15 @@ def test_oversized_smtp_host_is_truncated_and_flagged(mock_smtp, monkeypatch):
     controlled and appears in both the success and failure responses, but was
     missing from the trim list — so a long SMTP_HOST returned ~9KB while
     still reporting truncated: True, i.e. claiming a cap it hadn't applied.
-    Same omission url_reputation had on PR #19."""
+    Same omission url_reputation had on PR #19.
+
+    Needs the T-073 opt-in: a 10,000-character host is not the Range, so
+    without ALLOW_EXTERNAL_SMTP=1 the guard refuses and this stops exercising
+    the *success* response it was written to cap."""
     cm, _ = _mock_smtp()
     mock_smtp.return_value = cm
     monkeypatch.setenv("SMTP_HOST", "h" * 10_000)
+    monkeypatch.setenv("ALLOW_EXTERNAL_SMTP", "1")
 
     result = notify_impersonated(ADDRESS, EVIDENCE)
 
@@ -295,7 +429,12 @@ def test_oversized_smtp_host_is_truncated_and_flagged(mock_smtp, monkeypatch):
 
 @patch("imports_mcp.notify_impersonated.smtplib.SMTP")
 def test_oversized_smtp_host_on_the_failure_path_is_also_capped(mock_smtp, monkeypatch):
+    """The opt-in is set for the same reason as the test above: without it the
+    T-073 guard refuses before `smtplib` is ever reached, and this would
+    silently become a second copy of the refusal test instead of covering the
+    SMTP-exception path it is named for."""
     monkeypatch.setenv("SMTP_HOST", "h" * 10_000)
+    monkeypatch.setenv("ALLOW_EXTERNAL_SMTP", "1")
     mock_smtp.side_effect = ConnectionRefusedError("refused")
 
     result = notify_impersonated(ADDRESS, EVIDENCE)
