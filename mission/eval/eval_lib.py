@@ -171,6 +171,21 @@ TRUEFORGE_TIMEOUT_SECONDS = 60.0  # a real multi-tool-call turn can take a while
 # anything.
 _TURN_FINISHED_EVENT_TYPES = ("turn.done", "mission.complete")
 
+# TurnDoneEvent.state is one of TurnStateDone / TurnStateCancelled /
+# TurnStateError, discriminated on `status`. Only "done" means the agent
+# actually finished and chose not to act; the other two mean the turn never
+# reached a decision at all.
+#
+# Found the hard way on the first live fixture (2026-08-30): a real turn.done
+# arrived carrying {"status": "error", "message": "Cannot connect to API: "}
+# after a subagent's model call failed mid-turn, and this module scored it
+# `predicted_positive=False, error=None` - a false negative on a
+# ground-truth phishing fixture, indistinguishable from a real "the agent
+# saw the evidence and declined to act". Exactly the failure the module
+# docstring promises never happens; it was already handled for truncated
+# streams and transport errors, and simply missed for an errored turn.
+_TURN_SUCCEEDED_STATUS = "done"
+
 # Transport-layer failures that mean "this fixture's evaluation could not be
 # completed," never "the model quietly declined to act." HTTPError/URLError
 # alone missed a real class of failure (Qodo, PR #76, "Stream timeouts abort
@@ -391,6 +406,46 @@ def _resolve_tool_name(
     return None
 
 
+def _terminal_status(event: dict[str, Any]) -> str | None:
+    """The `status` on a turn-finished event's own state, if it carried one.
+
+    Returns None when the event has no state at all, which is how
+    `mission.complete` (this project's Layer 2 event, never on the raw wire)
+    and any future stateless terminal event stay readable rather than being
+    treated as failures.
+    """
+    state = event.get("state")
+    if not isinstance(state, dict):
+        return None
+    status = state.get("status")
+    return status if isinstance(status, str) else None
+
+
+def _raise_if_turn_failed(event: dict[str, Any], session_id: str) -> str | None:
+    """Raises unless the turn genuinely completed. Returns the status seen.
+
+    A turn that errored or was cancelled produced no verdict and proposed no
+    action - it is a failed evaluation, to be excluded from the metrics via
+    FixtureResult.error, never a "no gated action proposed" negative.
+    """
+    status = _terminal_status(event)
+    if status is None or status == _TURN_SUCCEEDED_STATUS:
+        return status
+    state = event.get("state")
+    detail = ""
+    if isinstance(state, dict):
+        # TurnStateError carries `message`, TurnStateCancelled carries `reason`.
+        for key in ("message", "reason"):
+            value = state.get(key)
+            if isinstance(value, str) and value.strip():
+                detail = f": {value.strip()}"
+                break
+    raise TrueForgeError(
+        f"turn for session {session_id} finished with status {status!r}{detail} - "
+        "the turn never reached a verdict, so this fixture could not be scored"
+    )
+
+
 @dataclass
 class TurnObservation:
     gate_fired: bool = False
@@ -405,6 +460,10 @@ class TurnObservation:
     gate_fired is the correctness boundary, this list is not."""
     completed_without_gate: bool = False
     raw_event_types_seen: list[str] = field(default_factory=list)
+    terminal_status: str | None = None
+    """The turn-finished event's own state.status, when it carried one -
+    diagnostic only. A non-"done" status never reaches here as an
+    observation: it raises instead (see _turn_finished_or_raise)."""
 
 
 def run_turn_and_observe(
@@ -474,6 +533,9 @@ def run_turn_and_observe(
                     return observation  # answer found - never resume, stop reading
 
                 if event_type in _TURN_FINISHED_EVENT_TYPES:
+                    # Raises for an errored/cancelled turn rather than
+                    # returning it as a clean negative.
+                    observation.terminal_status = _raise_if_turn_failed(event, session_id)
                     observation.completed_without_gate = True
                     return observation
     except _TRANSPORT_ERRORS as exc:

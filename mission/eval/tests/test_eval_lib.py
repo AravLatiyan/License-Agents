@@ -338,6 +338,143 @@ def test_completely_empty_stream_raises_trueforge_error(mock_urlopen):
 
 
 # ---------------------------------------------------------------------------
+# turn.done carrying a failure status
+#
+# Regression for the first live fixture (2026-08-30, sample-1.eml): a real
+# turn.done arrived with {"status": "error", "message": "Cannot connect to
+# API: "} after a subagent's model call failed mid-turn, and the harness
+# scored it predicted_positive=False / error=None - a false negative on a
+# ground-truth phishing fixture, silently counted in the denominator.
+# ---------------------------------------------------------------------------
+
+
+# The event exactly as the live server sent it, byte for byte.
+_LIVE_ERRORED_TURN_DONE = {
+    "type": "turn.done",
+    "id": "01m19gqb1x0000000000000000",
+    "state": {
+        "status": "error",
+        "message": "Cannot connect to API: ",
+        "completed_at": "2026-08-30T14:21:09.133Z",
+        "metrics": {
+            "total_input_tokens": 70086,
+            "total_output_tokens": 5723,
+            "total_tokens": 75809,
+        },
+    },
+    "created_at": "2026-08-30T14:21:09.133Z",
+    "thread_id": None,
+}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_errored_turn_done_raises_instead_of_scoring_a_negative(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(TrueForgeError, match="finished with status 'error'"):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_errored_turn_done_surfaces_the_servers_own_message(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE))
+
+    with pytest.raises(TrueForgeError) as excinfo:
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert "Cannot connect to API" in str(excinfo.value)
+
+
+@patch("eval_lib.delete_temp_fixture")
+@patch("eval_lib.write_temp_fixture")
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_phish_whose_turn_errors_is_a_failure_not_a_false_negative(
+    mock_urlopen, mock_write, mock_delete
+):
+    """The whole point of the fix: this fixture must not land in the metrics
+    as `predicted_positive is False` on a phishing label."""
+    mock_write.return_value = "eval-x.eml"
+    mock_urlopen.side_effect = [
+        _FakeResponse(body=json.dumps({"data": {"id": "sess-1"}}).encode("utf-8")),
+        _FakeResponse(lines=_sse_lines(_LIVE_ERRORED_TURN_DONE)),
+    ]
+
+    result = evaluate_fixture(
+        _fixture(name="sample-1.eml", label="phish"),
+        agent="universal-imports",
+        gated_tools=GATED_TOOLS,
+    )
+
+    assert result.predicted_positive is None, "an errored turn must never be a negative"
+    assert result.error is not None and "Cannot connect to API" in result.error
+
+    report = score([result])
+    assert report.failed == [result]
+    assert report.total_scored == 0
+    assert report.false_negatives == 0
+    assert report.gate_trigger_accuracy is None
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_cancelled_turn_done_is_also_a_failure(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            {"type": "turn.done", "state": {"status": "cancelled", "reason": "user_cancelled"}}
+        )
+    )
+
+    with pytest.raises(TrueForgeError, match="user_cancelled"):
+        run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_successful_turn_done_still_scores_as_a_clean_negative(mock_urlopen):
+    """The fix must not turn a genuine 'agent declined to act' into a
+    failure - that is the measurement this harness exists to make."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "turn.done", "state": {"status": "done"}})
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.gate_fired is False
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status == "done"
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_stateless_turn_finished_event_is_still_a_clean_negative(mock_urlopen):
+    """mission.complete (this project's Layer 2 event) carries no state at
+    all; a missing status must stay readable, not become a failure."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines({"type": "mission.complete"})
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.completed_without_gate is True
+    assert observation.terminal_status is None
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_a_gate_that_fires_before_an_errored_turn_done_still_counts(mock_urlopen):
+    """The gate is the answer the instant it fires - a turn that errors
+    afterwards cannot retract a licence request the operator already saw."""
+    mock_urlopen.return_value = _FakeResponse(
+        lines=_sse_lines(
+            _model_message("msg-1", "quarantine", "call-1"),
+            _approval_required([("call-1", "msg-1")]),
+            _LIVE_ERRORED_TURN_DONE,
+        )
+    )
+
+    observation = run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    assert observation.gate_fired is True
+    assert observation.resolved_gated_tools == ["quarantine"]
+
+
+# ---------------------------------------------------------------------------
 # create_session
 # ---------------------------------------------------------------------------
 
