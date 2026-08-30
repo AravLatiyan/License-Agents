@@ -57,10 +57,22 @@ scopes these to evals only, never the demo.
 Prerequisites (same as `harness/test/approval-gate-verification/`):
 
 ```bash
-npx @truefoundry/trueforge &                    # localhost:8790
+sudo apt-get install -y bubblewrap socat ripgrep   # TrueForge's local sandbox needs all three
+npx @truefoundry/trueforge &                       # localhost:8790
+curl -X POST http://localhost:8790/api/v1/settings/mcp-servers   -H 'Content-Type: application/json'   -d '{"manifest":{"type":"remote","name":"imports-mcp","url":"http://127.0.0.1:8941/mcp","description":"..."}}'
 curl -X POST http://localhost:8790/api/v1/agents -d @harness/agent.json
 # a model provider configured + spend cap set, in TrueForge's settings UI
 ```
+
+`agent.json` sets `config.sandbox.enabled: true`, so registering it needs a
+sandbox. TrueForge standalone has a **local bubblewrap sandbox** that needs
+no provider and no credential, but its boot probe requires `bwrap`, `socat`
+and `rg` on Linux (`SRT_HOST_BINARIES_BY_PLATFORM`). Without them the probe
+fails, `GET /api/v1/capabilities` reports `sandbox.enabled: false`, and
+`POST /api/v1/agents` returns
+`422 "sandbox is enabled but no sandbox provider is configured"` — a message
+that points at Daytona even though Daytona is not needed. Install the three
+packages instead; see PLAN.md §7.
 
 Then:
 
@@ -78,19 +90,30 @@ means the model provider isn't configured, PLAN.md §5).
 
 ## What's verified vs. assumed
 
-Confirmed against this project's own prior live verification (T-002/§6,
-T-037/2026-08-29): `POST /sessions`, `POST /sessions/{id}/turns` with
-`stream: true` → SSE, the `tool.approval_required` / `model.message` wire
-shapes and their `ToolCallRef` correlation.
+Everything below is now confirmed against a **live TrueForge 0.1.4**
+instance (2026-08-30), replacing the earlier "not independently re-verified"
+note. The four shapes that note flagged were all wrong, and all are fixed:
 
-**Not independently re-verified this session** (no local TrueForge instance
-was running, and `trueforge.dev` was unreachable from this environment):
-the exact JSON body `POST /sessions` expects to bind a session to an agent
-by name, and the exact `input` shape for a turn's *first* message (only the
-*resume* shape, `user.tool_approval`, is documented anywhere in this repo).
-Both are isolated to one function each in `eval_lib.py`
-(`create_session()`, `run_turn_and_observe()`) — fix there first if a live
-run shows a different shape.
+| was | is | how it failed |
+|---|---|---|
+| `POST /sessions` | `POST /api/v1/sessions` | `404` |
+| `{"agent_name": …}` | `{"agent": {"name": …}}` | `400 Unrecognized key: "agent_name"` |
+| id at `payload["id"]` | id at `payload["data"]["id"]` | "carried no usable id" |
+| `input` a single object | `input` an **array** of items | `400 expected array, received object` |
+
+Each was confirmed by the server's own request validation, which runs
+*before* the turn does — so pinning these down cost no model call. The
+`tool.approval_required` / `model.message` wire shapes and their
+`ToolCallRef` correlation were re-checked field-by-field against the live
+`/api/v1/openapi.json` and are unchanged from T-002/T-037.
+
+One correction carried over from that check: `mission.complete` is this
+project's own Layer 2 translated event (`contracts/events.ts`), **not** a
+TrueForge wire event — TrueForge's `TurnStreamingEvent` union has 12 types
+and `turn.done` is the only turn-terminal one. `thread.done` is
+deliberately not treated as turn-terminal here: it fires per thread, so a
+delegated subagent finishing would end the read before the root agent had
+proposed anything.
 
 ## Safety
 

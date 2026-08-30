@@ -94,18 +94,28 @@ cross-folder *runtime* write, not a source change — `tools/imports_mcp/`
 itself is untouched — but it touches O2's fixture directory, flagged here
 per CLAUDE.md's cross-folder heads-up convention.
 
-UNVERIFIED WIRE ASSUMPTIONS — isolated, flagged, fix here first
+WIRE SHAPES — verified against a live TrueForge 0.1.4 instance
 -------------------------------------------------------------------
-Two request bodies are genuinely undocumented anywhere in this repository
-(no live TrueForge instance was running in this session to introspect its
-openapi.json directly, and trueforge.dev was unreachable from this
-environment): the exact field TrueForge's `POST /sessions` uses to bind a
-session to an agent by name, and the exact `input` shape for a turn's
-*initial* user message (only the *resume* shape, `user.tool_approval`, is
-documented in contracts/events.ts). Both assumptions live in exactly one
-place each — `create_session()` and `run_turn_and_observe()` below — so a
-live run that reveals the real shape needs one function fixed, not a
-broader rewrite.
+The two request bodies that were previously flagged as unverified (the
+field `POST /sessions` uses to bind a session to an agent by name, and the
+`input` shape for a turn's *initial* user message) are now confirmed
+against a running server's own `/api/v1/openapi.json` and by issuing the
+requests, 2026-08-30. Four assumptions were wrong and are fixed here:
+
+  1. Every route is under `/api/v1` (`API_PREFIX`). The bare `/sessions`
+     this module used returned 404.
+  2. `POST /api/v1/sessions` takes `{"agent": {"name": ...}}`
+     (`CreateSessionRequest` -> `CreateSessionAgent` -> `SessionAgentNameRef`).
+     The previous `{"agent_name": ...}` returned
+     400 'Unrecognized key: "agent_name"'.
+  3. The created session's id is nested: `{"data": {"id": ...}}`
+     (`GetSessionResponse` -> `Session`), not a top-level `id`.
+  4. `CreateTurnRequest.input` is an **array** of `TurnInputItem`, not a
+     single object. The previous object body returned
+     400 'expected array, received object'.
+
+Each was confirmed by the server's own validation error before any model
+call was made, so none of this cost a paid turn.
 """
 
 from __future__ import annotations
@@ -136,12 +146,29 @@ FIXTURE_LABELS = ("phish", "ham")
 TOOLS_FIXTURES_DIR = REPO_ROOT / "tools" / "fixtures"
 
 DEFAULT_TRUEFORGE_URL = "http://localhost:8790"
+
+# Every TrueForge route lives under this prefix - confirmed against a live
+# instance's own openapi.json (2026-08-30). The bare "/sessions" this module
+# used before returned 404, and a 404 is a transport error, so every fixture
+# would have been reported as failed rather than scored.
+API_PREFIX = "/api/v1"
 TRUEFORGE_TIMEOUT_SECONDS = 60.0  # a real multi-tool-call turn can take a while
 
-# The two "the wire finished without ever asking for a licence" signals -
-# named exactly as TrueForge's own closed 12-type union does (contracts/
-# events.ts). Whichever arrives first with no prior tool.approval_required
-# means this fixture never proposed a gated action.
+# "The wire finished without ever asking for a licence." Arriving with no
+# prior tool.approval_required means this fixture never proposed a gated
+# action.
+#
+# `turn.done` is the only turn-terminal type in TrueForge's own 12-type
+# streaming union (TurnStreamingEvent, verified against a live instance's
+# openapi.json, 2026-08-30). `mission.complete` is this project's own
+# Layer 2 translated event (contracts/events.ts), never emitted on the raw
+# wire this module reads - it is kept only so a future translated-stream
+# consumer of this constant stays correct, and is inert here.
+#
+# `thread.done` is deliberately NOT in this list even though it is
+# turn-terminal-looking: it fires once per thread, and a delegated subagent
+# finishing would end the read long before the root agent has proposed
+# anything.
 _TURN_FINISHED_EVENT_TYPES = ("turn.done", "mission.complete")
 
 # Transport-layer failures that mean "this fixture's evaluation could not be
@@ -308,19 +335,25 @@ def _post_json(url: str, body: dict[str, Any], timeout: float) -> bytes:
 def create_session(
     agent: str, *, base_url: str | None = None, timeout: float = TRUEFORGE_TIMEOUT_SECONDS
 ) -> str:
-    """POST /sessions — confirmed live (T-002, PLAN.md §6). The exact
-    request-body field that binds a session to an agent by name was not
-    independently re-verified against a live instance this session; see the
-    module docstring's UNVERIFIED WIRE ASSUMPTIONS section."""
-    url = f"{(base_url or trueforge_url()).rstrip('/')}/sessions"
-    raw = _post_json(url, {"agent_name": agent}, timeout)
+    """POST /api/v1/sessions — request and response shapes both verified
+    against a live TrueForge 0.1.4 instance (2026-08-30); see the module
+    docstring's WIRE SHAPES section for what was wrong before and how each
+    was confirmed."""
+    url = f"{(base_url or trueforge_url()).rstrip('/')}{API_PREFIX}/sessions"
+    raw = _post_json(url, {"agent": {"name": agent}}, timeout)
     try:
         payload = json.loads(raw)
     except ValueError as exc:
         raise TrueForgeError(f"non-JSON response creating a session: {raw[:200]!r}") from exc
     if not isinstance(payload, dict):
         raise TrueForgeError(f"session response was not a JSON object: {payload!r}")
-    session_id = payload.get("id") or payload.get("session_id")
+    # GetSessionResponse wraps the Session in `data`; the id is never at the
+    # top level. Reading `payload["id"]` (as this did) meant every fixture
+    # failed with "carried no usable id" against a real server.
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise TrueForgeError(f"session response carried no data object: {payload!r}")
+    session_id = data.get("id")
     if not isinstance(session_id, str) or not session_id:
         raise TrueForgeError(f"session response carried no usable id: {payload!r}")
     return session_id
@@ -385,8 +418,13 @@ def run_turn_and_observe(
     """Submits one turn, watches its SSE stream for tool.approval_required,
     and stops reading the instant it fires — see the module docstring's
     SAFETY section for why this never resumes a paused gate."""
-    url = f"{(base_url or trueforge_url()).rstrip('/')}/sessions/{session_id}/turns"
-    request_body = {"input": {"type": "user.message", "content": message}, "stream": True}
+    url = f"{(base_url or trueforge_url()).rstrip('/')}{API_PREFIX}/sessions/{session_id}/turns"
+    # `input` is an array of TurnInputItem, not one item. A bare object is
+    # rejected before the turn runs: 400 "expected array, received object".
+    request_body = {
+        "input": [{"type": "user.message", "content": message}],
+        "stream": True,
+    }
     data = json.dumps(request_body).encode("utf-8")
     request = urllib.request.Request(
         url,

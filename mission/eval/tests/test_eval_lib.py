@@ -344,7 +344,7 @@ def test_completely_empty_stream_raises_trueforge_error(mock_urlopen):
 
 @patch("eval_lib.urllib.request.urlopen")
 def test_create_session_returns_the_session_id(mock_urlopen):
-    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"id": "sess-abc"}).encode("utf-8"))
+    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8"))
 
     session_id = create_session("universal-imports")
 
@@ -362,10 +362,30 @@ def test_create_session_raises_on_http_error(mock_urlopen):
 
 
 @patch("eval_lib.urllib.request.urlopen")
-def test_create_session_raises_when_response_has_no_id(mock_urlopen):
+def test_create_session_raises_when_response_has_no_data(mock_urlopen):
     mock_urlopen.return_value = _FakeResponse(body=json.dumps({"status": "ok"}).encode("utf-8"))
 
-    with pytest.raises(TrueForgeError):
+    with pytest.raises(TrueForgeError, match="no data object"):
+        create_session("universal-imports")
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_raises_when_data_carries_no_id(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"title": None}}).encode("utf-8")
+    )
+
+    with pytest.raises(TrueForgeError, match="no usable id"):
+        create_session("universal-imports")
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_raises_when_the_id_is_top_level_only(mock_urlopen):
+    """The pre-fix shape. A server that answered like this would mean the
+    wire changed again, and that must fail loudly rather than silently."""
+    mock_urlopen.return_value = _FakeResponse(body=json.dumps({"id": "sess-abc"}).encode("utf-8"))
+
+    with pytest.raises(TrueForgeError, match="no data object"):
         create_session("universal-imports")
 
 
@@ -383,6 +403,68 @@ def test_create_session_raises_trueforge_error_on_timeout(mock_urlopen):
 
     with pytest.raises(TrueForgeError, match="timed out"):
         create_session("universal-imports")
+
+
+# ---------------------------------------------------------------------------
+# Request shape - URL and body
+#
+# Nothing in this suite used to assert either, which is exactly how four
+# wrong wire shapes survived until a live instance rejected them (module
+# docstring, WIRE SHAPES). These pin all four against regression.
+# ---------------------------------------------------------------------------
+
+
+def _sent_request(mock_urlopen):
+    """The urllib.request.Request object passed to the mocked urlopen."""
+    return mock_urlopen.call_args[0][0]
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_posts_to_the_api_v1_path(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8")
+    )
+
+    create_session("universal-imports", base_url="http://localhost:8790")
+
+    assert _sent_request(mock_urlopen).full_url == "http://localhost:8790/api/v1/sessions"
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_create_session_binds_the_agent_by_nested_name(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(
+        body=json.dumps({"data": {"id": "sess-abc"}}).encode("utf-8")
+    )
+
+    create_session("universal-imports")
+
+    body = json.loads(_sent_request(mock_urlopen).data.decode("utf-8"))
+    assert body == {"agent": {"name": "universal-imports"}}
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_run_turn_posts_to_the_api_v1_turns_path(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+
+    run_turn_and_observe(
+        "sess-1", "look at eval-x.eml", GATED_TOOLS, base_url="http://localhost:8790"
+    )
+
+    assert (
+        _sent_request(mock_urlopen).full_url
+        == "http://localhost:8790/api/v1/sessions/sess-1/turns"
+    )
+
+
+@patch("eval_lib.urllib.request.urlopen")
+def test_run_turn_sends_input_as_an_array_of_items(mock_urlopen):
+    mock_urlopen.return_value = _FakeResponse(lines=_sse_lines({"type": "turn.done"}))
+
+    run_turn_and_observe("sess-1", "look at eval-x.eml", GATED_TOOLS)
+
+    body = json.loads(_sent_request(mock_urlopen).data.decode("utf-8"))
+    assert body["input"] == [{"type": "user.message", "content": "look at eval-x.eml"}]
+    assert body["stream"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +674,7 @@ def test_one_fixtures_events_cannot_contaminate_anothers_result(
         _approval_required([("call-1", "msg-1")]),
     )
     negative_lines = _sse_lines({"type": "turn.done"})
-    session_response = _FakeResponse(body=json.dumps({"id": "sess-x"}).encode("utf-8"))
+    session_response = _FakeResponse(body=json.dumps({"data": {"id": "sess-x"}}).encode("utf-8"))
 
     # First fixture: session creation, then a positive turn.
     # Second fixture: a fresh session creation, then a negative turn - a
