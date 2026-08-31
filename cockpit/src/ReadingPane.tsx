@@ -43,16 +43,21 @@ export function ReadingPane({
 }) {
   const mailpitId = message?.mailpitId ?? null;
 
-  const [detail, setDetail] = useState<MailpitMessageDetail | null>(null);
-  const [headers, setHeaders] = useState<Record<string, string[]> | null>(null);
+  // `undefined` means "still in flight"; `null` means "the request finished
+  // and failed". The source helpers deliberately return null for every
+  // failure mode, so collapsing both into one sentinel left a failed HTML,
+  // Text or Headers fetch rendering "Loading..." forever (Qodo, PR #100
+  // finding #3).
+  const [detail, setDetail] = useState<MailpitMessageDetail | null | undefined>(undefined);
+  const [headers, setHeaders] = useState<Record<string, string[]> | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>("html");
   const [raw, setRaw] = useState<string | null>(null);
 
   // A fresh selection means fresh content - stale HTML from the previous
   // message must never flash under a message that hasn't loaded yet.
   useEffect(() => {
-    setDetail(null);
-    setHeaders(null);
+    setDetail(undefined);
+    setHeaders(undefined);
     setRaw(null);
     setTab("html");
     if (!mailpitId) return;
@@ -157,12 +162,13 @@ function TabContent({
   raw,
 }: {
   tab: Tab;
-  detail: MailpitMessageDetail | null;
-  headers: Record<string, string[]> | null;
+  detail: MailpitMessageDetail | null | undefined;
+  headers: Record<string, string[]> | null | undefined;
   raw: string | null;
 }) {
   if (tab === "html") {
-    if (!detail) return <p className="reading-pane__unavailable">Loading…</p>;
+    if (detail === undefined) return <p className="reading-pane__unavailable">Loading…</p>;
+    if (detail === null) return <p className="reading-pane__unavailable">Message content could not be loaded.</p>;
     if (!detail.html) return <p className="reading-pane__unavailable">No HTML body.</p>;
     // Untrusted email HTML - a real Mailpit renders this in a sandboxed
     // frame for the same reason: it must never run script or read this
@@ -170,7 +176,8 @@ function TabContent({
     return <iframe title="Message body (HTML)" sandbox="" srcDoc={detail.html} className="reading-pane__iframe" />;
   }
   if (tab === "text") {
-    if (!detail) return <p className="reading-pane__unavailable">Loading…</p>;
+    if (detail === undefined) return <p className="reading-pane__unavailable">Loading…</p>;
+    if (detail === null) return <p className="reading-pane__unavailable">Message content could not be loaded.</p>;
     if (!detail.text) return <p className="reading-pane__unavailable">No text body.</p>;
     return <pre className="reading-pane__pre">{detail.text}</pre>;
   }
@@ -180,7 +187,8 @@ function TabContent({
     return <pre className="reading-pane__pre">{raw}</pre>;
   }
   // headers
-  if (!headers) return <p className="reading-pane__unavailable">Loading…</p>;
+  if (headers === undefined) return <p className="reading-pane__unavailable">Loading…</p>;
+  if (headers === null) return <p className="reading-pane__unavailable">Headers could not be loaded.</p>;
   const entries = Object.entries(headers);
   if (entries.length === 0) return <p className="reading-pane__unavailable">Headers not available.</p>;
   return (

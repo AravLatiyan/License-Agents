@@ -91,8 +91,12 @@ export function MissionContextPanel({
   const failedEvent = events.findLast((e): e is Extract<MissionEvent, { type: "mission.failed" }> => e.type === "mission.failed");
   const lanes = buildEvidenceLanes(events);
   const allGates = buildApprovalGates(events);
+  // Only slots with a proposed action are real gates; the rest are empty
+  // fixed slots buildApprovalGates always returns (Qodo, PR #100 finding
+  // #4). Both the numerator and the denominator below count the same set -
+  // "0 of 4 granted" under a two-action mission was the visible symptom.
   const gates = allGates.filter((g): g is ApprovalGateState & { action: ProposedActionName } => g.action !== undefined);
-  const grantedCount = allGates.filter((g) => g.executed).length;
+  const grantedCount = gates.filter((g) => g.executed).length;
 
   const detonationEvent = events.findLast((e): e is Extract<MissionEvent, { type: "mission.detonation" }> => e.type === "mission.detonation");
   const completeEvent = events.findLast((e): e is Extract<MissionEvent, { type: "mission.complete" }> => e.type === "mission.complete");
@@ -147,7 +151,7 @@ export function MissionContextPanel({
           <section className="mission-panel__actions">
             <div className="mission-panel__actions-header">
               <h3>{gates.length > 0 ? "What should you do?" : "No action needed"}</h3>
-              {gates.length > 0 && <span className="mission-panel__actions-count">{grantedCount} of {allGates.length} granted</span>}
+              {gates.length > 0 && <span className="mission-panel__actions-count">{grantedCount} of {gates.length} granted</span>}
             </div>
             {gates.length === 0 && verdict === "legitimate" && <p className="mission-panel__note">Nothing here needs a response.</p>}
             {gates.length > 0 && (

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test src/trueForgeSource.test.ts src/missionPlan.test.ts"
+    "test": "node --experimental-strip-types --test src/trueForgeSource.test.ts src/missionPlan.test.ts src/mailpitSource.test.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

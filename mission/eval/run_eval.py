@@ -49,6 +49,7 @@ def _result_to_dict(result: FixtureResult) -> dict:
         "predicted_positive": result.predicted_positive,
         "resolved_gated_tools": result.resolved_gated_tools,
         "error": result.error,
+        "attempts": result.attempts,
     }
 
 
@@ -71,6 +72,10 @@ def _print_summary(results: list[FixtureResult], report: Report) -> None:
         print(f"  of which HTTP 422 (model provider not configured, PLAN.md §5): {len(provider_failures)}")
         for r in report.failed:
             print(f"  - {r.fixture_name}: {r.error}")
+    retried = [r for r in results if r.attempts > 1]
+    total_turns = sum(r.attempts for r in results)
+    print(f"Turns actually spent: {total_turns} across {len(results)} fixtures"
+          f" ({len(retried)} needed a retry after a transient transport failure)")
     print(f"TP={report.true_positives} TN={report.true_negatives} "
           f"FP={report.false_positives} FN={report.false_negatives}")
     if report.gate_trigger_accuracy is None:
@@ -106,7 +111,13 @@ def main() -> int:
             "positive" if result.predicted_positive else "negative"
         )
         detail = result.error if result.error else ", ".join(result.resolved_gated_tools)
-        print(f"[{i}/{len(fixtures)}] {fixture.name} ({fixture.label}) -> {status}  {detail}", flush=True)
+        # Retries are real, billed turns - surface them per fixture rather
+        # than letting a run's true spend hide behind the fixture count.
+        retried = f" [{result.attempts} attempts]" if result.attempts > 1 else ""
+        print(
+            f"[{i}/{len(fixtures)}] {fixture.name} ({fixture.label}) -> {status}{retried}  {detail}",
+            flush=True,
+        )
 
     from eval_lib import score
 

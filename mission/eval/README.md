@@ -57,10 +57,22 @@ scopes these to evals only, never the demo.
 Prerequisites (same as `harness/test/approval-gate-verification/`):
 
 ```bash
-npx @truefoundry/trueforge &                    # localhost:8790
+sudo apt-get install -y bubblewrap socat ripgrep   # TrueForge's local sandbox needs all three
+npx @truefoundry/trueforge &                       # localhost:8790
+curl -X POST http://localhost:8790/api/v1/settings/mcp-servers   -H 'Content-Type: application/json'   -d '{"manifest":{"type":"remote","name":"imports-mcp","url":"http://127.0.0.1:8941/mcp","description":"..."}}'
 curl -X POST http://localhost:8790/api/v1/agents -d @harness/agent.json
 # a model provider configured + spend cap set, in TrueForge's settings UI
 ```
+
+`agent.json` sets `config.sandbox.enabled: true`, so registering it needs a
+sandbox. TrueForge standalone has a **local bubblewrap sandbox** that needs
+no provider and no credential, but its boot probe requires `bwrap`, `socat`
+and `rg` on Linux (`SRT_HOST_BINARIES_BY_PLATFORM`). Without them the probe
+fails, `GET /api/v1/capabilities` reports `sandbox.enabled: false`, and
+`POST /api/v1/agents` returns
+`422 "sandbox is enabled but no sandbox provider is configured"` — a message
+that points at Daytona even though Daytona is not needed. Install the three
+packages instead; see PLAN.md §7.
 
 Then:
 
@@ -78,19 +90,104 @@ means the model provider isn't configured, PLAN.md §5).
 
 ## What's verified vs. assumed
 
-Confirmed against this project's own prior live verification (T-002/§6,
-T-037/2026-08-29): `POST /sessions`, `POST /sessions/{id}/turns` with
-`stream: true` → SSE, the `tool.approval_required` / `model.message` wire
-shapes and their `ToolCallRef` correlation.
+Everything below is now confirmed against a **live TrueForge 0.1.4**
+instance (2026-08-30), replacing the earlier "not independently re-verified"
+note. The four shapes that note flagged were all wrong, and all are fixed:
 
-**Not independently re-verified this session** (no local TrueForge instance
-was running, and `trueforge.dev` was unreachable from this environment):
-the exact JSON body `POST /sessions` expects to bind a session to an agent
-by name, and the exact `input` shape for a turn's *first* message (only the
-*resume* shape, `user.tool_approval`, is documented anywhere in this repo).
-Both are isolated to one function each in `eval_lib.py`
-(`create_session()`, `run_turn_and_observe()`) — fix there first if a live
-run shows a different shape.
+| was | is | how it failed |
+|---|---|---|
+| `POST /sessions` | `POST /api/v1/sessions` | `404` |
+| `{"agent_name": …}` | `{"agent": {"name": …}}` | `400 Unrecognized key: "agent_name"` |
+| id at `payload["id"]` | id at `payload["data"]["id"]` | "carried no usable id" |
+| `input` a single object | `input` an **array** of items | `400 expected array, received object` |
+
+Each was confirmed by the server's own request validation, which runs
+*before* the turn does — so pinning these down cost no model call. The
+`tool.approval_required` / `model.message` wire shapes and their
+`ToolCallRef` correlation were re-checked field-by-field against the live
+`/api/v1/openapi.json` and are unchanged from T-002/T-037.
+
+One correction carried over from that check: `mission.complete` is this
+project's own Layer 2 translated event (`contracts/events.ts`), **not** a
+TrueForge wire event — TrueForge's `TurnStreamingEvent` union has 12 types
+and `turn.done` is the only turn-terminal one. `thread.done` is
+deliberately not treated as turn-terminal here: it fires per thread, so a
+delegated subagent finishing would end the read before the root agent had
+proposed anything.
+
+## Resolving which gate fired
+
+TrueForge never exposes an MCP tool to the model under its own name - every
+one is proxied behind `function.name == "call_tool"`, with the real name in
+that call's JSON-encoded arguments:
+
+```json
+{"name": "call_tool",
+ "arguments": "{\"mcp_server\":\"imports-mcp\",\"tool_name\":\"quarantine\",\"input\":{...}}"}
+```
+
+`_resolve_tool_name` unwraps that. A `call_tool` whose arguments are missing
+or malformed resolves to **nothing**, never to `"call_tool"` and never to a
+guess - reporting the wrapper's own name would read as a confident
+"not gated" answer.
+
+There is a second step, and it is the one that actually mattered live.
+TrueForge opens an assistant turn with a `model.message` **header** carrying
+no `tool_calls` at all (`AgentThread.ts:1021`), streams the calls as
+`model.message.delta` events, and assembles the complete message only
+afterwards - persisted, and returned by `GET /events`, but emitted too late
+to correlate against. So `run_turn_and_observe` accumulates the deltas
+(`ExtendedChunkDeltaToolCall`: `index`, `id`, `function.name`,
+`function.arguments`, the last two arriving whole or fragmented) per event id
+and per index, and folds them into the same `tool_calls` shape a finished
+message carries. A populated `model.message` still wins when one arrives in
+time; the deltas are the fallback, and on the live stream they are always
+what answers.
+
+Live fixtures #3 and #4 both fired real gates and resolved nothing before
+this. Replaying their *persisted* events resolved correctly, which is exactly
+what hid it - a stored log is not the stream.
+
+This is diagnostics only. `gate_fired` - the mere occurrence of
+`tool.approval_required` - remains the correctness boundary and the sole
+input to the metric, exactly as before.
+
+## Retries
+
+TrueForge does not retry model calls - `VercelAILLM.ts:939` hardcodes
+`maxRetries: 0`, with no env knob - so a connect-layer blip that the Vercel
+AI SDK has *already* classified `isRetryable: true` still kills the whole
+turn. The first live fixture died exactly that way.
+
+`evaluate_fixture` therefore retries, narrowly:
+
+- **Only** a `turn.done` whose error message carries the AI SDK's own
+  retryable-transport marker, `Cannot connect to API:`. That prefix is built
+  in both of `handleFetchError`'s network-failure branches and **both** set
+  `isRetryable: true`; nothing else in that function produces it. So the
+  match maps onto the SDK's own classification, not a guess.
+- **Never** an auth failure, invalid request, rate limit, provider-side
+  model error, or a `cancelled` turn (somebody stopped that one on purpose).
+- **Never** a dropped stream or a transport error talking to TrueForge
+  itself: those leave the turn's outcome unknown and possibly still running
+  server-side, so re-submitting would double-spend.
+- **Bounded** at `MAX_TURN_ATTEMPTS = 3` with a 2 s backoff. Every attempt
+  is a real billed turn - this trades a bounded amount of money for not
+  losing a fixture to one dropped socket, and is not a way to push through
+  a provider that is genuinely down.
+
+A retry runs in a **fresh session**, which is what makes it safe to score:
+attempt 2 reads its own stream, so no event is counted twice. When the
+budget is spent the fixture still becomes a `report.failed` entry excluded
+from both metrics - `RetryableTurnError` subclasses `TrueForgeError`, so it
+only decides whether one more attempt is worth making, never whether a
+failure counts. `FixtureResult.attempts` records what each fixture actually
+cost, and `run_eval.py` prints the total turns spent alongside the fixture
+count.
+
+A gate that has already fired is never retracted: reading stops at
+`tool.approval_required`, so a later errored `turn.done` is never even
+parsed and no second turn is bought.
 
 ## Safety
 

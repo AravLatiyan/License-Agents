@@ -58,6 +58,16 @@ const sourceLabel = liveBaseUrl && liveInput ? "live TrueForge" : "fixture playb
  *  back to the whole string if it isn't the angle-bracket form - `from` is
  *  untrusted upstream data (RDAP/the message itself), never assumed to be
  *  well-formed. */
+/** An RFC Message-ID, comparable across systems: angle brackets stripped
+ *  (Mailpit reports it without them, a parsed header usually keeps them),
+ *  trimmed, lowercased. Returns null for anything unusable, which callers
+ *  must treat as "identity unknown" rather than as a value to match on. */
+function normaliseMessageId(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^</, "").replace(/>$/, "").trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
 function addressFromHeader(from: string): string {
   const match = /<([^>]+)>/.exec(from);
   return (match ? match[1] : from).trim().toLowerCase();
@@ -211,7 +221,23 @@ function App() {
     if (!messageEvent) return { messages: live, investigatedId: null as string | null };
 
     const investigatedAddress = addressFromHeader(messageEvent.message.from);
-    const matched = live.find((m) => m.from.address.toLowerCase() === investigatedAddress);
+
+    // Identity, not resemblance. A sender address is not an identifier: the
+    // same person sends many messages, and matching on it alone relabelled
+    // an unrelated email with this mission's id and showed it under this
+    // mission's verdict and evidence (Qodo, PR #100 finding #1). The RFC
+    // Message-ID is the one field both sides genuinely share - Mailpit
+    // reports it as `MessageSummary.MessageID`, and the parsed message
+    // carries it as `message_id`.
+    //
+    // When either side has no Message-ID, identity cannot be established,
+    // so no match is made. That shows the mission as its own synthetic row
+    // beside the real mailbox, which is honest; silently falling back to
+    // the sender would put one email's investigation on another's.
+    const investigatedMessageId = normaliseMessageId(messageEvent.message.message_id);
+    const matched = investigatedMessageId
+      ? live.find((m) => normaliseMessageId(m.messageId) === investigatedMessageId)
+      : undefined;
     const otherLive = matched ? live.filter((m) => m !== matched) : live;
 
     // The investigated row's id is always the mission's own message_id, not
@@ -229,6 +255,10 @@ function App() {
       ? { ...matched, id: messageEvent.message.message_id }
       : {
           id: messageEvent.message.message_id,
+          // The synthetic row IS the investigated message, so it carries the
+          // mission's own Message-ID - that is what a later live match is
+          // compared against.
+          messageId: messageEvent.message.message_id,
           from: { name: messageEvent.message.display_name, address: investigatedAddress },
           subject: null,
           date: null,
@@ -278,7 +308,14 @@ function App() {
         onClick: () => setDrawerOpen((v) => !v),
       };
     } else if (verdictEvent) {
-      const gates = buildApprovalGates(allEvents);
+      // buildApprovalGates always returns all four fixed slots, whether or
+      // not an action was ever proposed for them. Counting the empty ones
+      // told a legitimate mission with no proposed actions that it had
+      // "4 licences pending" while the drawer beside it correctly said
+      // "No action needed" (Qodo, PR #100 finding #4). Only gates that
+      // actually carry an action are countable - the same filter
+      // MissionContextPanel already applies to decide what to render.
+      const gates = buildApprovalGates(allEvents).filter((g) => g.action !== undefined);
       const pendingCount = gates.filter((g) => !g.executed && g.resolved !== "deny").length;
       banner = {
         status: verdictEvent.verdict,

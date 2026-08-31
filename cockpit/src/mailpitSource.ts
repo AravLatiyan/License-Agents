@@ -28,6 +28,16 @@ export interface InboxMessage {
    *  ever true for a synthetic (mailpitId === null) row since there's no
    *  real message to have a read state at all. */
   read: boolean;
+  /** The message's own RFC Message-ID header, as Mailpit reports it
+   *  (`MessageSummary.MessageID`, range/mailpit-api.json) - angle brackets
+   *  already stripped by Mailpit. This is the only field that identifies a
+   *  message across systems: `id`/`mailpitId` are Mailpit's own row ids and
+   *  mean nothing to the mission stream. `null` when the message carried no
+   *  Message-ID header at all, which is not a match failure to route around
+   *  - it means identity cannot be established, and the caller must decline
+   *  to match rather than fall back to a weaker signal (Qodo, PR #100
+   *  finding #1). */
+  messageId: string | null;
   /** Mailpit's own row ID - the one the reading pane fetches by
    *  (fetchMailpitMessage/fetchMailpitHeaders/fetchMailpitRaw). Distinct from
    *  `id` above: App.tsx pins the investigated row's `id` to the mission's
@@ -63,8 +73,10 @@ function messageOf(v: unknown): InboxMessage | null {
   const created = v.Created;
   const snippet = v.Snippet;
   const tags = v.Tags;
+  const messageId = v.MessageID;
   return {
     id,
+    messageId: isStr(messageId) && messageId.length > 0 ? messageId : null,
     from,
     subject: isStr(subject) && subject.length > 0 ? subject : null,
     date: isStr(created) ? created : null,
@@ -75,31 +87,62 @@ function messageOf(v: unknown): InboxMessage | null {
   };
 }
 
+/** Mailpit's `GET /api/v1/messages` defaults to 50 per page (its own
+ *  vendored spec, range/mailpit-api.json) and reports the mailbox size
+ *  separately as `total`. One unparameterised request therefore returns a
+ *  *page*, not the mailbox - so search and tag filtering, which both run
+ *  client-side over this array, silently could not see message 51 onward
+ *  (Qodo, PR #100 finding #2). Paged through explicitly instead. */
+const INBOX_PAGE_SIZE = 200;
+/** A hard stop so a mailbox that keeps growing, or a server that reports a
+ *  `total` it never delivers, cannot spin this loop forever. Reaching it
+ *  means the inbox is shown truncated rather than not at all - the same
+ *  degrade-don't-throw posture as every other path in this file. */
+const INBOX_MAX_PAGES = 25;
+
 /**
- * The mailbox's messages, newest first (Mailpit's own default order).
+ * The mailbox's messages, newest first (Mailpit's own default order), paged
+ * through to completion rather than stopping at Mailpit's default first 50.
  * Returns `null` on anything that isn't a clean 200 with the expected shape
  * - never partial data presented as complete, and never an exception the
  * caller has to remember to catch.
  */
 export async function fetchMailpitInbox(baseUrl: string, fetchImpl: typeof fetch = fetch): Promise<InboxMessage[] | null> {
-  let response: Response;
-  try {
-    response = await fetchImpl(`${baseUrl}/api/v1/messages`);
-  } catch {
-    return null; // no server reachable at all - the common case on a clean clone
-  }
-  if (!response.ok) return null;
+  const collected: InboxMessage[] = [];
 
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return null;
-  }
-  if (!isRecord(body) || !Array.isArray(body.messages)) return null;
+  for (let page = 0; page < INBOX_MAX_PAGES; page++) {
+    const start = page * INBOX_PAGE_SIZE;
+    let response: Response;
+    try {
+      response = await fetchImpl(`${baseUrl}/api/v1/messages?start=${start}&limit=${INBOX_PAGE_SIZE}`);
+    } catch {
+      return null; // no server reachable at all - the common case on a clean clone
+    }
+    if (!response.ok) return null;
 
-  const messages = body.messages.map(messageOf).filter((m): m is InboxMessage => m !== null);
-  return messages;
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+    if (!isRecord(body) || !Array.isArray(body.messages)) return null;
+
+    const batch = body.messages.map(messageOf).filter((m): m is InboxMessage => m !== null);
+    collected.push(...batch);
+
+    // Stop on a short page (the last one), on an empty page, or once the
+    // server's own `total` says we have them all. A page that parsed to
+    // zero usable rows also stops the loop - continuing would request the
+    // same range forever if the shape were unexpected.
+    const total = body.total;
+    const raw = body.messages.length;
+    if (raw < INBOX_PAGE_SIZE) break;
+    if (typeof total === "number" && start + raw >= total) break;
+    if (batch.length === 0) break;
+  }
+
+  return collected;
 }
 
 /**

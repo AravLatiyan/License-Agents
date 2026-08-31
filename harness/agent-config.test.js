@@ -56,3 +56,64 @@ test("no selector shorthand is used — the gates are literal tool names", () =>
     assert.ok(!gate.startsWith("@"), `${gate} is a selector, not a literal tool name`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Output budget (T-042, 2026-08-30)
+//
+// Why this file also pins max_tokens now: the manifest shipped with 4096, and
+// that is not a loud failure either. The second live evaluation fixture
+// (sample-10.eml, 24KB) died with finish_reason "length" on the call where the
+// root agent composes its three sub-agent prompts - the turn ended
+// `{"status":"error","message":"max_tokens breached"}`, no sub-agent was ever
+// created, and no approval gate was reached. Measured, not inferred: the same
+// call on the smaller sample-1.eml (15.7KB) completed at 3675 output tokens,
+// so the ceiling sat barely above what a normal turn already needs, and a
+// thinking model's reasoning counts against it.
+// ---------------------------------------------------------------------------
+
+/** Largest single-call output actually observed completing a real turn (sample-1.eml). */
+const OBSERVED_PEAK_OUTPUT_TOKENS = 3675;
+
+/** The ceiling that truncated sample-10.eml's sub-agent-spawning call. */
+const OBSERVED_TRUNCATION_CEILING = 4096;
+
+/**
+ * TrueForge's own catalog for the registered model:
+ * GET /api/v1/models -> anthropic/claude-sonnet-5 ->
+ *   properties.max_output_tokens = 128000
+ */
+const MODEL_MAX_OUTPUT_TOKENS = 128000;
+
+test("max_tokens clears the ceiling that truncated a real evaluation turn", () => {
+  const maxTokens = manifest.model.params.max_tokens;
+  assert.equal(typeof maxTokens, "number");
+  assert.ok(
+    maxTokens > OBSERVED_TRUNCATION_CEILING,
+    `max_tokens ${maxTokens} must exceed the ${OBSERVED_TRUNCATION_CEILING} ceiling that ` +
+      "ended a real turn with finish_reason 'length'",
+  );
+});
+
+test("max_tokens leaves real headroom over the largest observed completing call", () => {
+  // 4x the only peak we have actually measured. Two live fixtures is a small
+  // sample and the corpus runs to 114KB, so the margin is deliberate - and it
+  // costs nothing: max_tokens is a ceiling, not a target. Spend is driven by
+  // tokens actually generated.
+  assert.ok(
+    manifest.model.params.max_tokens >= OBSERVED_PEAK_OUTPUT_TOKENS * 4,
+    "max_tokens must keep at least 4x headroom over the observed peak",
+  );
+});
+
+test("max_tokens stays within what the registered model actually supports", () => {
+  assert.ok(
+    manifest.model.params.max_tokens <= MODEL_MAX_OUTPUT_TOKENS,
+    `max_tokens must not exceed ${MODEL_MAX_OUTPUT_TOKENS}, the max_output_tokens ` +
+      "TrueForge's own /api/v1/models catalog advertises for anthropic/claude-sonnet-5",
+  );
+});
+
+test("the model itself is unchanged - only the output budget moved", () => {
+  assert.equal(manifest.model.name, "anthropic/claude-sonnet-5");
+  assert.equal(manifest.model.params.temperature, 0.2);
+});
