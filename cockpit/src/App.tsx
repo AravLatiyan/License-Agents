@@ -317,6 +317,23 @@ function App() {
       // MissionContextPanel already applies to decide what to render.
       const gates = buildApprovalGates(allEvents).filter((g) => g.action !== undefined);
       const pendingCount = gates.filter((g) => !g.executed && g.resolved !== "deny").length;
+      // "No action needed" is only true when nothing was ever proposed
+      // (gates.length === 0). Zero *pending* is a different fact - every
+      // gate could be zero-pending because all N were granted and executed,
+      // which is the opposite of nothing needed. This banner used to
+      // collapse both into "No action needed," directly contradicting the
+      // drawer beside it (MissionContextPanel's own "N of M granted"), and
+      // undercutting the exact moment §17's demo script is built around -
+      // four irreversible actions actually executing. Same "N of M granted"
+      // wording as that drawer once nothing is left pending, so the two
+      // views can't disagree.
+      const executedCount = gates.filter((g) => g.executed).length;
+      const rightText =
+        gates.length === 0
+          ? `No action needed · ${toggleText}`
+          : pendingCount > 0
+            ? `${pendingCount} licence${pendingCount === 1 ? "" : "s"} pending · ${toggleText}`
+            : `${executedCount} of ${gates.length} licence${gates.length === 1 ? "" : "s"} granted · ${toggleText}`;
       banner = {
         status: verdictEvent.verdict,
         leftText: (
@@ -324,7 +341,7 @@ function App() {
             This message was investigated — <strong>{verdictLabel(verdictEvent.verdict)}</strong>
           </>
         ),
-        rightText: pendingCount === 0 ? `No action needed · ${toggleText}` : `${pendingCount} licence${pendingCount === 1 ? "" : "s"} pending · ${toggleText}`,
+        rightText,
         onClick: () => setDrawerOpen((v) => !v),
       };
     }
